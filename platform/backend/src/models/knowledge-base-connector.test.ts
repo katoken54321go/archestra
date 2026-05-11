@@ -1,3 +1,5 @@
+import { eq } from "drizzle-orm";
+import db, { schema } from "@/database";
 import { describe, expect, test } from "@/test";
 import KnowledgeBaseConnectorModel from "./knowledge-base-connector";
 
@@ -727,9 +729,19 @@ describe("KnowledgeBaseConnectorModel", () => {
 
       await KnowledgeBaseConnectorModel.delete(connector.id);
 
-      // Verify connector is gone (PGlite may not return accurate rowCount)
+      const [row] = await db
+        .select({ deletedAt: schema.knowledgeBaseConnectorsTable.deletedAt })
+        .from(schema.knowledgeBaseConnectorsTable)
+        .where(eq(schema.knowledgeBaseConnectorsTable.id, connector.id));
+      expect(row?.deletedAt).toBeInstanceOf(Date);
+
       const found = await KnowledgeBaseConnectorModel.findById(connector.id);
       expect(found).toBeNull();
+
+      const assignments = await KnowledgeBaseConnectorModel.getKnowledgeBaseIds(
+        connector.id,
+      );
+      expect(assignments).toHaveLength(0);
     });
 
     test("does not throw when deleting a non-existent connector", async () => {

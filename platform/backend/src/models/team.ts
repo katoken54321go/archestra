@@ -1,6 +1,7 @@
 import { MEMBER_ROLE_NAME } from "@shared";
 import { and, count, eq, getTableColumns, ilike, inArray } from "drizzle-orm";
 import db, { schema } from "@/database";
+import { notDeleted, softDeleteValues } from "@/database/utils/soft-delete";
 import logger from "@/logging";
 import type {
   InsertTeam,
@@ -62,7 +63,12 @@ class TeamModel {
     const teams = await db
       .select()
       .from(schema.teamsTable)
-      .where(eq(schema.teamsTable.organizationId, organizationId));
+      .where(
+        and(
+          eq(schema.teamsTable.organizationId, organizationId),
+          notDeleted(schema.teamsTable),
+        ),
+      );
 
     // Batch fetch all members for all teams in one query
     const teamIds = teams.map((t) => t.id);
@@ -97,6 +103,7 @@ class TeamModel {
 
     const filters = [
       eq(schema.teamsTable.organizationId, organizationId),
+      notDeleted(schema.teamsTable),
       ...(name ? [ilike(schema.teamsTable.name, `%${name}%`)] : []),
     ];
 
@@ -149,6 +156,7 @@ class TeamModel {
         and(
           eq(schema.teamsTable.name, name),
           eq(schema.teamsTable.organizationId, organizationId),
+          notDeleted(schema.teamsTable),
         ),
       )
       .limit(1);
@@ -176,7 +184,7 @@ class TeamModel {
     const [team] = await db
       .select()
       .from(schema.teamsTable)
-      .where(eq(schema.teamsTable.id, id))
+      .where(and(eq(schema.teamsTable.id, id), notDeleted(schema.teamsTable)))
       .limit(1);
 
     if (!team) {
@@ -207,7 +215,12 @@ class TeamModel {
     const teams = await db
       .select()
       .from(schema.teamsTable)
-      .where(inArray(schema.teamsTable.id, teamIds));
+      .where(
+        and(
+          inArray(schema.teamsTable.id, teamIds),
+          notDeleted(schema.teamsTable),
+        ),
+      );
 
     logger.debug({ count: teams.length }, "TeamModel.findByIds: completed");
     return teams.map((team) => ({
@@ -227,7 +240,7 @@ class TeamModel {
         ...input,
         updatedAt: new Date(),
       })
-      .where(eq(schema.teamsTable.id, id))
+      .where(and(eq(schema.teamsTable.id, id), notDeleted(schema.teamsTable)))
       .returning();
 
     if (!updatedTeam) {
@@ -246,11 +259,68 @@ class TeamModel {
    */
   static async delete(id: string): Promise<boolean> {
     logger.debug({ id }, "TeamModel.delete: deleting team");
-    const rows = await db
-      .delete(schema.teamsTable)
-      .where(eq(schema.teamsTable.id, id))
-      .returning({ id: schema.teamsTable.id });
+    const rows = await db.transaction(async (tx) => {
+      const deleted = await tx
+        .update(schema.teamsTable)
+        .set(softDeleteValues())
+        .where(and(eq(schema.teamsTable.id, id), notDeleted(schema.teamsTable)))
+        .returning({ id: schema.teamsTable.id });
+
+      if (deleted.length === 0) {
+        return deleted;
+      }
+
+      await tx
+        .delete(schema.teamMembersTable)
+        .where(eq(schema.teamMembersTable.teamId, id));
+      await tx
+        .delete(schema.agentTeamsTable)
+        .where(eq(schema.agentTeamsTable.teamId, id));
+      await tx
+        .delete(schema.conversationShareTeamsTable)
+        .where(eq(schema.conversationShareTeamsTable.teamId, id));
+      await tx
+        .delete(schema.mcpCatalogTeamsTable)
+        .where(eq(schema.mcpCatalogTeamsTable.teamId, id));
+      await tx
+        .delete(schema.virtualApiKeyTeamsTable)
+        .where(eq(schema.virtualApiKeyTeamsTable.teamId, id));
+      await tx
+        .delete(schema.teamExternalGroupsTable)
+        .where(eq(schema.teamExternalGroupsTable.teamId, id));
+      await tx
+        .delete(schema.teamVaultFoldersTable)
+        .where(eq(schema.teamVaultFoldersTable.teamId, id));
+      await tx
+        .update(schema.limitsTable)
+        .set(softDeleteValues())
+        .where(
+          and(
+            eq(schema.limitsTable.entityType, "team"),
+            eq(schema.limitsTable.entityId, id),
+            notDeleted(schema.limitsTable),
+          ),
+        );
+      await tx
+        .update(schema.optimizationRulesTable)
+        .set(softDeleteValues())
+        .where(
+          and(
+            eq(schema.optimizationRulesTable.entityType, "team"),
+            eq(schema.optimizationRulesTable.entityId, id),
+            notDeleted(schema.optimizationRulesTable),
+          ),
+        );
+
+      return deleted;
+    });
     const deleted = rows.length > 0;
+    if (deleted) {
+      const token = await TeamTokenModel.findTeamToken(id);
+      if (token) {
+        await TeamTokenModel.delete(token.id);
+      }
+    }
     logger.debug({ id, deleted }, "TeamModel.delete: completed");
     return deleted;
   }
@@ -408,7 +478,12 @@ class TeamModel {
       db
         .select()
         .from(schema.teamsTable)
-        .where(inArray(schema.teamsTable.id, teamIds)),
+        .where(
+          and(
+            inArray(schema.teamsTable.id, teamIds),
+            notDeleted(schema.teamsTable),
+          ),
+        ),
       TeamModel.getTeamMembersBatch(teamIds),
     ]);
 
@@ -441,6 +516,7 @@ class TeamModel {
 
     const filters = [
       eq(schema.teamMembersTable.userId, userId),
+      notDeleted(schema.teamsTable),
       ...(name ? [ilike(schema.teamsTable.name, `%${name}%`)] : []),
     ];
 
@@ -494,10 +570,15 @@ class TeamModel {
     const [membership] = await db
       .select()
       .from(schema.teamMembersTable)
+      .innerJoin(
+        schema.teamsTable,
+        eq(schema.teamMembersTable.teamId, schema.teamsTable.id),
+      )
       .where(
         and(
           eq(schema.teamMembersTable.teamId, teamId),
           eq(schema.teamMembersTable.userId, userId),
+          notDeleted(schema.teamsTable),
         ),
       )
       .limit(1);
@@ -528,10 +609,15 @@ class TeamModel {
     const [membership] = await db
       .select({ teamId: schema.teamMembersTable.teamId })
       .from(schema.teamMembersTable)
+      .innerJoin(
+        schema.teamsTable,
+        eq(schema.teamMembersTable.teamId, schema.teamsTable.id),
+      )
       .where(
         and(
           inArray(schema.teamMembersTable.teamId, teamIds),
           eq(schema.teamMembersTable.userId, userId),
+          notDeleted(schema.teamsTable),
         ),
       )
       .limit(1);
@@ -559,10 +645,15 @@ class TeamModel {
     const rows = await db
       .select({ userId: schema.teamMembersTable.userId })
       .from(schema.teamMembersTable)
+      .innerJoin(
+        schema.teamsTable,
+        eq(schema.teamMembersTable.teamId, schema.teamsTable.id),
+      )
       .where(
         and(
           inArray(schema.teamMembersTable.teamId, params.teamIds),
           inArray(schema.teamMembersTable.userId, params.userIds),
+          notDeleted(schema.teamsTable),
         ),
       );
 
@@ -582,7 +673,16 @@ class TeamModel {
     const teamMemberships = await db
       .select({ teamId: schema.teamMembersTable.teamId })
       .from(schema.teamMembersTable)
-      .where(eq(schema.teamMembersTable.userId, userId));
+      .innerJoin(
+        schema.teamsTable,
+        eq(schema.teamMembersTable.teamId, schema.teamsTable.id),
+      )
+      .where(
+        and(
+          eq(schema.teamMembersTable.userId, userId),
+          notDeleted(schema.teamsTable),
+        ),
+      );
 
     const teamIds = teamMemberships.map((membership) => membership.teamId);
     logger.debug(
@@ -642,7 +742,10 @@ class TeamModel {
       .from(schema.agentTeamsTable)
       .innerJoin(
         schema.teamsTable,
-        eq(schema.agentTeamsTable.teamId, schema.teamsTable.id),
+        and(
+          eq(schema.agentTeamsTable.teamId, schema.teamsTable.id),
+          notDeleted(schema.teamsTable),
+        ),
       )
       .where(eq(schema.agentTeamsTable.agentId, agentId));
 
@@ -786,7 +889,10 @@ class TeamModel {
       .from(schema.teamExternalGroupsTable)
       .innerJoin(
         schema.teamsTable,
-        eq(schema.teamExternalGroupsTable.teamId, schema.teamsTable.id),
+        and(
+          eq(schema.teamExternalGroupsTable.teamId, schema.teamsTable.id),
+          notDeleted(schema.teamsTable),
+        ),
       )
       .where(
         and(
@@ -839,7 +945,10 @@ class TeamModel {
       .from(schema.teamExternalGroupsTable)
       .innerJoin(
         schema.teamsTable,
-        eq(schema.teamExternalGroupsTable.teamId, schema.teamsTable.id),
+        and(
+          eq(schema.teamExternalGroupsTable.teamId, schema.teamsTable.id),
+          notDeleted(schema.teamsTable),
+        ),
       )
       .where(
         and(
@@ -899,7 +1008,10 @@ class TeamModel {
       .from(schema.teamMembersTable)
       .innerJoin(
         schema.teamsTable,
-        eq(schema.teamMembersTable.teamId, schema.teamsTable.id),
+        and(
+          eq(schema.teamMembersTable.teamId, schema.teamsTable.id),
+          notDeleted(schema.teamsTable),
+        ),
       )
       .where(
         and(

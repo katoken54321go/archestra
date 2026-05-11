@@ -25,6 +25,7 @@ import {
 } from "drizzle-orm";
 import { clearChatMcpClient } from "@/clients/chat-mcp-client";
 import db, { schema } from "@/database";
+import { notDeleted, softDeleteValues } from "@/database/utils/soft-delete";
 import {
   createPaginatedResult,
   type PaginatedResult,
@@ -71,6 +72,7 @@ class AgentModel {
         and(
           eq(schema.agentsTable.organizationId, organizationId),
           inArray(schema.agentsTable.id, agentIds),
+          notDeleted(schema.agentsTable),
         ),
       )
       .orderBy(desc(schema.agentsTable.createdAt));
@@ -290,7 +292,7 @@ class AgentModel {
       .$dynamic();
 
     // Build where conditions
-    const whereConditions: SQL[] = [];
+    const whereConditions: SQL[] = [notDeleted(schema.agentsTable)];
 
     // Filter by agentTypes if specified (array of types)
     if (options?.agentTypes && options.agentTypes.length > 0) {
@@ -405,6 +407,7 @@ class AgentModel {
   ): Promise<Agent[]> {
     const whereConditions: SQL[] = [
       eq(schema.agentsTable.organizationId, organizationId),
+      notDeleted(schema.agentsTable),
     ];
 
     if (options?.agentType !== undefined) {
@@ -491,6 +494,7 @@ class AgentModel {
     const whereConditions: SQL[] = [
       eq(schema.agentsTable.organizationId, organizationId),
       inArray(schema.agentsTable.id, accessibleAgentIds),
+      notDeleted(schema.agentsTable),
     ];
 
     if (options?.agentType !== undefined) {
@@ -585,11 +589,14 @@ class AgentModel {
         eq(schema.agentLabelsTable.agentId, schema.agentsTable.id),
       )
       .where(
-        or(
-          ...pairs.map((pair) =>
-            and(
-              eq(schema.agentLabelsTable.keyId, pair.keyId),
-              eq(schema.agentLabelsTable.valueId, pair.valueId),
+        and(
+          notDeleted(schema.agentsTable),
+          or(
+            ...pairs.map((pair) =>
+              and(
+                eq(schema.agentLabelsTable.keyId, pair.keyId),
+                eq(schema.agentLabelsTable.valueId, pair.valueId),
+              ),
             ),
           ),
         ),
@@ -620,6 +627,7 @@ class AgentModel {
           eq(schema.agentsTable.agentType, "agent"),
           eq(schema.agentsTable.builtIn, false),
           ne(schema.agentsTable.scope, "personal"),
+          notDeleted(schema.agentsTable),
         ),
       )
       .orderBy(asc(schema.agentsTable.name));
@@ -646,6 +654,7 @@ class AgentModel {
         and(
           eq(schema.agentsTable.agentType, "agent"),
           eq(schema.agentsTable.builtIn, false),
+          notDeleted(schema.agentsTable),
           or(
             ne(schema.agentsTable.scope, "personal"),
             and(
@@ -686,7 +695,7 @@ class AgentModel {
       AgentModel.getPersonalAgentPriorityOrderClauses(userId);
 
     // Build where clause for filters and access control
-    const whereConditions: SQL[] = [];
+    const whereConditions: SQL[] = [notDeleted(schema.agentsTable)];
 
     // Add name filter if provided
     if (filters?.name) {
@@ -882,6 +891,7 @@ class AgentModel {
             ),
         })
         .from(schema.agentsTable)
+        .where(notDeleted(schema.agentsTable))
         .as("knowledgeSourcesCounts");
 
       query = query
@@ -904,7 +914,10 @@ class AgentModel {
         .from(schema.agentTeamsTable)
         .leftJoin(
           schema.teamsTable,
-          eq(schema.agentTeamsTable.teamId, schema.teamsTable.id),
+          and(
+            eq(schema.agentTeamsTable.teamId, schema.teamsTable.id),
+            notDeleted(schema.teamsTable),
+          ),
         )
         .groupBy(schema.agentTeamsTable.agentId)
         .as("teamNames");
@@ -953,7 +966,12 @@ class AgentModel {
           schema.toolsTable,
           eq(schema.agentToolsTable.toolId, schema.toolsTable.id),
         )
-        .where(inArray(schema.agentsTable.id, sortedAgentIds)),
+        .where(
+          and(
+            inArray(schema.agentsTable.id, sortedAgentIds),
+            notDeleted(schema.agentsTable),
+          ),
+        ),
       db.select({ total: count() }).from(schema.agentsTable).where(whereClause),
     ]);
 
@@ -1079,7 +1097,7 @@ class AgentModel {
     const [result] = await db
       .select({ id: schema.agentsTable.id })
       .from(schema.agentsTable)
-      .where(eq(schema.agentsTable.id, id))
+      .where(and(eq(schema.agentsTable.id, id), notDeleted(schema.agentsTable)))
       .limit(1);
 
     return result !== undefined;
@@ -1114,7 +1132,9 @@ class AgentModel {
           authorId: schema.agentsTable.authorId,
         })
         .from(schema.agentsTable)
-        .where(inArray(schema.agentsTable.id, ids)),
+        .where(
+          and(inArray(schema.agentsTable.id, ids), notDeleted(schema.agentsTable)),
+        ),
       AgentTeamModel.getTeamDetailsForAgents(ids),
     ]);
 
@@ -1152,7 +1172,9 @@ class AgentModel {
     const results = await db
       .select({ id: schema.agentsTable.id })
       .from(schema.agentsTable)
-      .where(inArray(schema.agentsTable.id, ids));
+      .where(
+        and(inArray(schema.agentsTable.id, ids), notDeleted(schema.agentsTable)),
+      );
 
     return new Set(results.map((r) => r.id));
   }
@@ -1185,7 +1207,7 @@ class AgentModel {
         schema.toolsTable,
         eq(schema.agentToolsTable.toolId, schema.toolsTable.id),
       )
-      .where(eq(schema.agentsTable.id, id));
+      .where(and(eq(schema.agentsTable.id, id), notDeleted(schema.agentsTable)));
 
     if (rows.length === 0) {
       return null;
@@ -1253,6 +1275,7 @@ class AgentModel {
         and(
           eq(schema.agentsTable.isDefault, true),
           eq(schema.agentsTable.agentType, "profile"),
+          notDeleted(schema.agentsTable),
         ),
       );
 
@@ -1304,6 +1327,7 @@ class AgentModel {
         and(
           eq(schema.agentsTable.isDefault, true),
           eq(schema.agentsTable.agentType, agentType),
+          notDeleted(schema.agentsTable),
         ),
       );
 
@@ -1378,7 +1402,7 @@ class AgentModel {
     const [existingAgent] = await db
       .select()
       .from(schema.agentsTable)
-      .where(eq(schema.agentsTable.id, id));
+      .where(and(eq(schema.agentsTable.id, id), notDeleted(schema.agentsTable)));
 
     if (!existingAgent) {
       return null;
@@ -1393,6 +1417,7 @@ class AgentModel {
           and(
             eq(schema.agentsTable.isDefault, true),
             eq(schema.agentsTable.agentType, existingAgent.agentType),
+            notDeleted(schema.agentsTable),
           ),
         );
     }
@@ -1402,7 +1427,7 @@ class AgentModel {
       const [row] = await db
         .update(schema.agentsTable)
         .set(agent)
-        .where(eq(schema.agentsTable.id, id))
+        .where(and(eq(schema.agentsTable.id, id), notDeleted(schema.agentsTable)))
         .returning();
 
       if (!row) {
@@ -1510,6 +1535,7 @@ class AgentModel {
   ): Promise<Agent | null> {
     const conditions: SQL[] = [
       sql`${schema.agentsTable.builtInAgentConfig}->>'name' = ${builtInName}`,
+      notDeleted(schema.agentsTable),
     ];
     if (organizationId) {
       conditions.push(eq(schema.agentsTable.organizationId, organizationId));
@@ -1551,11 +1577,80 @@ class AgentModel {
   }
 
   static async delete(id: string): Promise<boolean> {
-    const rows = await db
-      .delete(schema.agentsTable)
-      .where(eq(schema.agentsTable.id, id))
-      .returning({ id: schema.agentsTable.id });
-    return rows.length > 0;
+    const parentAgentIds = await ToolModel.getParentAgentIds(id);
+    const deleted = await db.transaction(async (tx) => {
+      const rows = await tx
+        .update(schema.agentsTable)
+        .set(softDeleteValues())
+        .where(
+          and(eq(schema.agentsTable.id, id), notDeleted(schema.agentsTable)),
+        )
+        .returning({ id: schema.agentsTable.id });
+
+      if (rows.length === 0) {
+        return false;
+      }
+
+      await tx
+        .delete(schema.agentKnowledgeBasesTable)
+        .where(eq(schema.agentKnowledgeBasesTable.agentId, id));
+      await tx
+        .delete(schema.agentConnectorAssignmentsTable)
+        .where(eq(schema.agentConnectorAssignmentsTable.agentId, id));
+      await tx
+        .delete(schema.agentSuggestedPromptsTable)
+        .where(eq(schema.agentSuggestedPromptsTable.agentId, id));
+      await tx
+        .delete(schema.agentLabelsTable)
+        .where(eq(schema.agentLabelsTable.agentId, id));
+      await tx
+        .delete(schema.agentTeamsTable)
+        .where(eq(schema.agentTeamsTable.agentId, id));
+      await tx
+        .delete(schema.agentToolsTable)
+        .where(eq(schema.agentToolsTable.agentId, id));
+      await tx
+        .update(schema.scheduleTriggersTable)
+        .set(softDeleteValues())
+        .where(
+          and(
+            eq(schema.scheduleTriggersTable.agentId, id),
+            notDeleted(schema.scheduleTriggersTable),
+          ),
+        );
+      await tx
+        .update(schema.limitsTable)
+        .set(softDeleteValues())
+        .where(
+          and(
+            eq(schema.limitsTable.entityType, "agent"),
+            eq(schema.limitsTable.entityId, id),
+            notDeleted(schema.limitsTable),
+          ),
+        );
+      await tx
+        .update(schema.optimizationRulesTable)
+        .set(softDeleteValues())
+        .where(
+          and(
+            eq(schema.optimizationRulesTable.entityType, "agent"),
+            eq(schema.optimizationRulesTable.entityId, id),
+            notDeleted(schema.optimizationRulesTable),
+          ),
+        );
+      await tx
+        .delete(schema.toolsTable)
+        .where(eq(schema.toolsTable.delegateToAgentId, id));
+
+      return true;
+    });
+
+    if (deleted) {
+      for (const parentAgentId of parentAgentIds) {
+        clearChatMcpClient(parentAgentId);
+      }
+    }
+    return deleted;
   }
 
   /** Check if an agent has any Playwright tools assigned via agent_tools. */
@@ -1630,6 +1725,7 @@ class AgentModel {
           eq(schema.agentsTable.authorId, userId),
           eq(schema.agentsTable.agentType, "mcp_gateway"),
           eq(schema.agentsTable.isPersonalGateway, true),
+          notDeleted(schema.agentsTable),
         ),
       )
       .limit(1);
@@ -1733,6 +1829,7 @@ class AgentModel {
           ),
           eq(schema.agentsTable.agentType, "mcp_gateway"),
           eq(schema.agentsTable.isPersonalGateway, true),
+          notDeleted(schema.agentsTable),
         ),
       )
       .where(isNull(schema.agentsTable.id));
@@ -1761,7 +1858,11 @@ class AgentModel {
           schema.agentsTable.organizationId,
           schema.agentsTable.authorId,
         ],
-        where: sql`${schema.agentsTable.agentType} = 'mcp_gateway' AND ${schema.agentsTable.isPersonalGateway} = true`,
+        where: sql`
+          ${schema.agentsTable.agentType} = 'mcp_gateway'
+          AND ${schema.agentsTable.isPersonalGateway} = true
+          AND ${schema.agentsTable.deletedAt} IS NULL
+        `,
       })
       .returning({ id: schema.agentsTable.id });
 
@@ -1776,7 +1877,7 @@ class AgentModel {
   }
 
   /**
-   * Deletes every personal MCP gateway authored by the given user across all
+   * Soft deletes every personal MCP gateway authored by the given user across all
    * organizations. Called from the better-auth user.delete hook so the personal
    * gateway is removed alongside its owner — the agents.author_id FK is
    * ON DELETE SET NULL (to preserve authorship of non-personal agents), so
@@ -1784,15 +1885,21 @@ class AgentModel {
    * and become permanently undeletable through the API guard.
    */
   static async deletePersonalMcpGatewaysForUser(userId: string): Promise<void> {
-    await db
-      .delete(schema.agentsTable)
+    const gateways = await db
+      .select({ id: schema.agentsTable.id })
+      .from(schema.agentsTable)
       .where(
         and(
           eq(schema.agentsTable.authorId, userId),
           eq(schema.agentsTable.agentType, "mcp_gateway"),
           eq(schema.agentsTable.isPersonalGateway, true),
+          notDeleted(schema.agentsTable),
         ),
       );
+
+    for (const gateway of gateways) {
+      await AgentModel.delete(gateway.id);
+    }
   }
 
   /**
@@ -1804,9 +1911,12 @@ class AgentModel {
       .select({ id: schema.agentsTable.id })
       .from(schema.agentsTable)
       .where(
-        or(
-          sql`${schema.agentsTable.id}::text = ${idOrSlug}`,
-          eq(schema.agentsTable.slug, idOrSlug),
+        and(
+          notDeleted(schema.agentsTable),
+          or(
+            sql`${schema.agentsTable.id}::text = ${idOrSlug}`,
+            eq(schema.agentsTable.slug, idOrSlug),
+          ),
         ),
       )
       .limit(1);
@@ -1892,7 +2002,12 @@ class AgentModel {
     const [existing] = await db
       .select({ id: schema.agentsTable.id })
       .from(schema.agentsTable)
-      .where(eq(schema.agentsTable.slug, baseSlug))
+      .where(
+        and(
+          eq(schema.agentsTable.slug, baseSlug),
+          notDeleted(schema.agentsTable),
+        ),
+      )
       .limit(1);
 
     if (existing) {

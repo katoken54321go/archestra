@@ -67,6 +67,7 @@ export const InsertMcpServerInstallationRequestSchema = createInsertSchema(
   id: true,
   createdAt: true,
   updatedAt: true,
+  deletedAt: true,
   requestedBy: true,
   status: true,
   reviewedBy: true,
@@ -82,6 +83,7 @@ export const UpdateMcpServerInstallationRequestSchema = createUpdateSchema(
   id: true,
   createdAt: true,
   updatedAt: true,
+  deletedAt: true,
   externalCatalogId: true,
   requestedBy: true,
 });

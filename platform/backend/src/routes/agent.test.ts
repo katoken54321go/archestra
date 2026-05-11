@@ -4,7 +4,9 @@ import {
   DEFAULT_ARCHESTRA_TOOL_SHORT_NAMES,
   TOOL_QUERY_KNOWLEDGE_SOURCES_SHORT_NAME,
 } from "@shared";
+import { eq } from "drizzle-orm";
 import { vi } from "vitest";
+import db, { schema } from "@/database";
 import { ToolModel } from "@/models";
 import type { FastifyInstanceWithZod } from "@/server";
 import { createFastifyInstance } from "@/server";
@@ -333,6 +335,12 @@ describe("agent routes", () => {
       const body = deleteResponse.json();
       expect(body).toHaveProperty("success");
       expect(body.success).toBe(true);
+
+      const [row] = await db
+        .select({ deletedAt: schema.agentsTable.deletedAt })
+        .from(schema.agentsTable)
+        .where(eq(schema.agentsTable.id, created.id));
+      expect(row?.deletedAt).toBeInstanceOf(Date);
 
       // Verify agent is deleted
       const getResponse = await app.inject({

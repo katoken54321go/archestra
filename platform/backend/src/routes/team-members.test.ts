@@ -1,5 +1,7 @@
+import { eq } from "drizzle-orm";
 import { vi } from "vitest";
 import type * as originalConfigModule from "@/config";
+import db, { schema } from "@/database";
 import type { FastifyInstanceWithZod } from "@/server";
 import { createFastifyInstance } from "@/server";
 import { afterEach, beforeEach, describe, expect, test } from "@/test";
@@ -261,6 +263,12 @@ describe("team routes", () => {
 
       expect(deleteResponse.statusCode).toBe(200);
       expect(deleteResponse.json().success).toBe(true);
+
+      const [row] = await db
+        .select({ deletedAt: schema.teamsTable.deletedAt })
+        .from(schema.teamsTable)
+        .where(eq(schema.teamsTable.id, team.id));
+      expect(row?.deletedAt).toBeInstanceOf(Date);
 
       // Verify deleted
       const getResponse = await app.inject({

@@ -1,5 +1,6 @@
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import db, { schema } from "@/database";
+import { notDeleted } from "@/database/utils/soft-delete";
 import logger from "@/logging";
 
 class ConversationEnabledToolModel {
@@ -46,7 +47,12 @@ class ConversationEnabledToolModel {
           schema.conversationsTable.hasCustomToolSelection,
       })
       .from(schema.conversationsTable)
-      .where(eq(schema.conversationsTable.id, conversationId))
+      .where(
+        and(
+          eq(schema.conversationsTable.id, conversationId),
+          notDeleted(schema.conversationsTable),
+        ),
+      )
       .limit(1);
 
     const hasCustom = result[0]?.hasCustomToolSelection ?? false;

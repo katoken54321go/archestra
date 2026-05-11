@@ -1,5 +1,6 @@
 import { and, count, desc, eq, ilike, inArray, or, sql } from "drizzle-orm";
 import db, { schema } from "@/database";
+import { notDeleted, softDeleteValues } from "@/database/utils/soft-delete";
 import type {
   InsertKnowledgeBaseConnector,
   KnowledgeBaseConnector,
@@ -27,6 +28,7 @@ class KnowledgeBaseConnectorModel {
             schema.knowledgeBaseConnectorsTable.organizationId,
             params.organizationId,
           ),
+          notDeleted(schema.knowledgeBaseConnectorsTable),
           buildVisibilityFilter({
             canReadAll: params.canReadAll,
             teamIds: params.viewerTeamIds,
@@ -51,7 +53,13 @@ class KnowledgeBaseConnectorModel {
       .select({ count: count() })
       .from(schema.knowledgeBaseConnectorsTable)
       .where(
-        eq(schema.knowledgeBaseConnectorsTable.organizationId, organizationId),
+        and(
+          eq(
+            schema.knowledgeBaseConnectorsTable.organizationId,
+            organizationId,
+          ),
+          notDeleted(schema.knowledgeBaseConnectorsTable),
+        ),
       );
 
     return result?.count ?? 0;
@@ -79,6 +87,7 @@ class KnowledgeBaseConnectorModel {
 
     const filters = [
       eq(schema.knowledgeBaseConnectorsTable.organizationId, organizationId),
+      notDeleted(schema.knowledgeBaseConnectorsTable),
       buildVisibilityFilter({ canReadAll, teamIds: viewerTeamIds }),
       ...(connectorType
         ? [eq(schema.knowledgeBaseConnectorsTable.connectorType, connectorType)]
@@ -139,6 +148,7 @@ class KnowledgeBaseConnectorModel {
         checkpoint: schema.knowledgeBaseConnectorsTable.checkpoint,
         createdAt: schema.knowledgeBaseConnectorsTable.createdAt,
         updatedAt: schema.knowledgeBaseConnectorsTable.updatedAt,
+        deletedAt: schema.knowledgeBaseConnectorsTable.deletedAt,
       })
       .from(schema.knowledgeBaseConnectorAssignmentsTable)
       .innerJoin(
@@ -154,6 +164,7 @@ class KnowledgeBaseConnectorModel {
             schema.knowledgeBaseConnectorAssignmentsTable.knowledgeBaseId,
             knowledgeBaseId,
           ),
+          notDeleted(schema.knowledgeBaseConnectorsTable),
           buildVisibilityFilter({
             canReadAll: params?.canReadAll,
             teamIds: params?.viewerTeamIds,
@@ -190,6 +201,7 @@ class KnowledgeBaseConnectorModel {
         checkpoint: schema.knowledgeBaseConnectorsTable.checkpoint,
         createdAt: schema.knowledgeBaseConnectorsTable.createdAt,
         updatedAt: schema.knowledgeBaseConnectorsTable.updatedAt,
+        deletedAt: schema.knowledgeBaseConnectorsTable.deletedAt,
         knowledgeBaseId:
           schema.knowledgeBaseConnectorAssignmentsTable.knowledgeBaseId,
       })
@@ -207,6 +219,7 @@ class KnowledgeBaseConnectorModel {
             schema.knowledgeBaseConnectorAssignmentsTable.knowledgeBaseId,
             knowledgeBaseIds,
           ),
+          notDeleted(schema.knowledgeBaseConnectorsTable),
           buildVisibilityFilter({
             canReadAll: params?.canReadAll,
             teamIds: params?.viewerTeamIds,
@@ -219,7 +232,12 @@ class KnowledgeBaseConnectorModel {
     const [result] = await db
       .select()
       .from(schema.knowledgeBaseConnectorsTable)
-      .where(eq(schema.knowledgeBaseConnectorsTable.id, id));
+      .where(
+        and(
+          eq(schema.knowledgeBaseConnectorsTable.id, id),
+          notDeleted(schema.knowledgeBaseConnectorsTable),
+        ),
+      );
 
     return result ?? null;
   }
@@ -230,7 +248,12 @@ class KnowledgeBaseConnectorModel {
     return await db
       .select()
       .from(schema.knowledgeBaseConnectorsTable)
-      .where(inArray(schema.knowledgeBaseConnectorsTable.id, ids));
+      .where(
+        and(
+          inArray(schema.knowledgeBaseConnectorsTable.id, ids),
+          notDeleted(schema.knowledgeBaseConnectorsTable),
+        ),
+      );
   }
 
   static async create(
@@ -251,7 +274,12 @@ class KnowledgeBaseConnectorModel {
     const [result] = await db
       .update(schema.knowledgeBaseConnectorsTable)
       .set(data)
-      .where(eq(schema.knowledgeBaseConnectorsTable.id, id))
+      .where(
+        and(
+          eq(schema.knowledgeBaseConnectorsTable.id, id),
+          notDeleted(schema.knowledgeBaseConnectorsTable),
+        ),
+      )
       .returning();
 
     return result ?? null;
@@ -261,7 +289,12 @@ class KnowledgeBaseConnectorModel {
     return await db
       .select()
       .from(schema.knowledgeBaseConnectorsTable)
-      .where(eq(schema.knowledgeBaseConnectorsTable.enabled, true));
+      .where(
+        and(
+          eq(schema.knowledgeBaseConnectorsTable.enabled, true),
+          notDeleted(schema.knowledgeBaseConnectorsTable),
+        ),
+      );
   }
 
   static async findAllWithStatus(
@@ -270,14 +303,51 @@ class KnowledgeBaseConnectorModel {
     return await db
       .select()
       .from(schema.knowledgeBaseConnectorsTable)
-      .where(eq(schema.knowledgeBaseConnectorsTable.lastSyncStatus, status));
+      .where(
+        and(
+          eq(schema.knowledgeBaseConnectorsTable.lastSyncStatus, status),
+          notDeleted(schema.knowledgeBaseConnectorsTable),
+        ),
+      );
   }
 
   static async delete(id: string): Promise<boolean> {
-    const rows = await db
-      .delete(schema.knowledgeBaseConnectorsTable)
-      .where(eq(schema.knowledgeBaseConnectorsTable.id, id))
-      .returning({ id: schema.knowledgeBaseConnectorsTable.id });
+    const rows = await db.transaction(async (tx) => {
+      const deleted = await tx
+        .update(schema.knowledgeBaseConnectorsTable)
+        .set(softDeleteValues())
+        .where(
+          and(
+            eq(schema.knowledgeBaseConnectorsTable.id, id),
+            notDeleted(schema.knowledgeBaseConnectorsTable),
+          ),
+        )
+        .returning({ id: schema.knowledgeBaseConnectorsTable.id });
+
+      if (deleted.length === 0) {
+        return deleted;
+      }
+
+      await tx
+        .delete(schema.agentConnectorAssignmentsTable)
+        .where(eq(schema.agentConnectorAssignmentsTable.connectorId, id));
+      await tx
+        .delete(schema.knowledgeBaseConnectorAssignmentsTable)
+        .where(
+          eq(schema.knowledgeBaseConnectorAssignmentsTable.connectorId, id),
+        );
+      await tx
+        .delete(schema.connectorRunsTable)
+        .where(eq(schema.connectorRunsTable.connectorId, id));
+      await tx
+        .delete(schema.kbUploadedFilesTable)
+        .where(eq(schema.kbUploadedFilesTable.connectorId, id));
+      await tx
+        .delete(schema.kbDocumentsTable)
+        .where(eq(schema.kbDocumentsTable.connectorId, id));
+
+      return deleted;
+    });
 
     return rows.length > 0;
   }
@@ -341,7 +411,13 @@ class KnowledgeBaseConnectorModel {
       .update(schema.knowledgeBaseConnectorsTable)
       .set({ checkpoint: null })
       .where(
-        eq(schema.knowledgeBaseConnectorsTable.organizationId, organizationId),
+        and(
+          eq(
+            schema.knowledgeBaseConnectorsTable.organizationId,
+            organizationId,
+          ),
+          notDeleted(schema.knowledgeBaseConnectorsTable),
+        ),
       );
   }
 
@@ -376,6 +452,7 @@ class KnowledgeBaseConnectorModel {
             schema.knowledgeBaseConnectorsTable.organizationId,
             organizationId,
           ),
+          notDeleted(schema.knowledgeBaseConnectorsTable),
         ),
       );
 

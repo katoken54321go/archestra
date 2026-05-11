@@ -44,6 +44,7 @@ export const UpdateLimitSchema = createUpdateSchema(schema.limitsTable, {
   id: true,
   createdAt: true,
   updatedAt: true,
+  deletedAt: true,
 });
 
 /**
@@ -53,6 +54,7 @@ export const CreateLimitSchema = InsertLimitSchema.omit({
   id: true,
   createdAt: true,
   updatedAt: true,
+  deletedAt: true,
 }).refine(
   (data) => {
     // Validation: mcp_server_calls requires mcpServerName and should not have model

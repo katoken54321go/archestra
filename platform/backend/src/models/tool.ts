@@ -33,6 +33,7 @@ import { getArchestraMcpTools } from "@/archestra-mcp-server";
 import { archestraMcpBranding } from "@/archestra-mcp-server/branding";
 import { getArchestraMcpCatalogMetadata } from "@/archestra-mcp-server/metadata";
 import db, { schema } from "@/database";
+import { notDeleted } from "@/database/utils/soft-delete";
 import {
   createPaginatedResult,
   type PaginatedResult,
@@ -1603,6 +1604,22 @@ class ToolModel {
   static async findOrCreateDelegationTool(
     targetAgentId: string,
   ): Promise<Tool> {
+    // Get target agent for naming
+    const [targetAgent] = await db
+      .select({ id: schema.agentsTable.id, name: schema.agentsTable.name })
+      .from(schema.agentsTable)
+      .where(
+        and(
+          eq(schema.agentsTable.id, targetAgentId),
+          notDeleted(schema.agentsTable),
+        ),
+      )
+      .limit(1);
+
+    if (!targetAgent) {
+      throw new Error(`Target agent not found: ${targetAgentId}`);
+    }
+
     // Check if delegation tool already exists
     const [existingTool] = await db
       .select()
@@ -1612,17 +1629,6 @@ class ToolModel {
 
     if (existingTool) {
       return existingTool;
-    }
-
-    // Get target agent for naming
-    const [targetAgent] = await db
-      .select({ id: schema.agentsTable.id, name: schema.agentsTable.name })
-      .from(schema.agentsTable)
-      .where(eq(schema.agentsTable.id, targetAgentId))
-      .limit(1);
-
-    if (!targetAgent) {
-      throw new Error(`Target agent not found: ${targetAgentId}`);
     }
 
     // Create delegation tool
@@ -1738,7 +1744,10 @@ class ToolModel {
       )
       .innerJoin(
         schema.agentsTable,
-        eq(schema.toolsTable.delegateToAgentId, schema.agentsTable.id),
+        and(
+          eq(schema.toolsTable.delegateToAgentId, schema.agentsTable.id),
+          notDeleted(schema.agentsTable),
+        ),
       )
       .where(
         and(
@@ -1769,6 +1778,17 @@ class ToolModel {
         description: `Delegate task to agent: ${newName}`,
       })
       .where(eq(schema.toolsTable.delegateToAgentId, targetAgentId));
+  }
+
+  static async deleteDelegationToolForAgent(
+    targetAgentId: string,
+  ): Promise<boolean> {
+    const rows = await db
+      .delete(schema.toolsTable)
+      .where(eq(schema.toolsTable.delegateToAgentId, targetAgentId))
+      .returning({ id: schema.toolsTable.id });
+
+    return rows.length > 0;
   }
 
   /**

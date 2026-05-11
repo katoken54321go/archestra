@@ -19,8 +19,12 @@ export const SelectTeamSchema = createSelectSchema(schema.teamsTable).extend({
   members: z.array(SelectTeamMemberSchema).optional(),
 });
 
-export const InsertTeamSchema = createInsertSchema(schema.teamsTable);
-export const UpdateTeamSchema = createUpdateSchema(schema.teamsTable);
+export const InsertTeamSchema = createInsertSchema(schema.teamsTable).omit({
+  deletedAt: true,
+});
+export const UpdateTeamSchema = createUpdateSchema(schema.teamsTable).omit({
+  deletedAt: true,
+});
 
 export const CreateTeamBodySchema = z.object({
   name: z.string().min(1, "Team name is required"),

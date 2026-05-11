@@ -1,4 +1,6 @@
 import { ChatErrorCode } from "@shared";
+import { eq } from "drizzle-orm";
+import db, { schema } from "@/database";
 import { describe, expect, test } from "@/test";
 import ConversationModel from "./conversation";
 import ConversationChatErrorModel from "./conversation-chat-error";
@@ -218,12 +220,23 @@ describe("ConversationModel", () => {
 
     await ConversationModel.delete(created.id, user.id, org.id);
 
+    const [row] = await db
+      .select({ deletedAt: schema.conversationsTable.deletedAt })
+      .from(schema.conversationsTable)
+      .where(eq(schema.conversationsTable.id, created.id));
+    expect(row?.deletedAt).toBeInstanceOf(Date);
+
     const found = await ConversationModel.findById({
       id: created.id,
       userId: user.id,
       organizationId: org.id,
     });
     expect(found).toBeNull();
+
+    const all = await ConversationModel.findAll(user.id, org.id);
+    expect(all.map((conversation) => conversation.id)).not.toContain(
+      created.id,
+    );
   });
 
   test("returns conversations ordered by updatedAt descending", async ({

@@ -16,6 +16,7 @@ export const team = pgTable("team", {
   updatedAt: timestamp("updated_at")
     .$onUpdate(() => /* @__PURE__ */ new Date())
     .notNull(),
+  deletedAt: timestamp("deleted_at"),
   convertToolResultsToToon: boolean("convert_tool_results_to_toon")
     .notNull()
     .default(false),

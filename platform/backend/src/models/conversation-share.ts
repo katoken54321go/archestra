@@ -1,5 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import db, { schema } from "@/database";
+import { notDeleted } from "@/database/utils/soft-delete";
 import type {
   Conversation,
   ConversationShare,
@@ -226,13 +227,21 @@ class ConversationShareModel {
       .from(schema.conversationsTable)
       .leftJoin(
         schema.agentsTable,
-        eq(schema.conversationsTable.agentId, schema.agentsTable.id),
+        and(
+          eq(schema.conversationsTable.agentId, schema.agentsTable.id),
+          notDeleted(schema.agentsTable),
+        ),
       )
       .leftJoin(
         schema.messagesTable,
         eq(schema.conversationsTable.id, schema.messagesTable.conversationId),
       )
-      .where(eq(schema.conversationsTable.id, share.conversationId))
+      .where(
+        and(
+          eq(schema.conversationsTable.id, share.conversationId),
+          notDeleted(schema.conversationsTable),
+        ),
+      )
       .orderBy(schema.messagesTable.createdAt);
 
     if (rows.length === 0) return null;
@@ -289,6 +298,13 @@ class ConversationShareModel {
       const memberships = await db
         .select({ teamId: schema.teamMembersTable.teamId })
         .from(schema.teamMembersTable)
+        .innerJoin(
+          schema.teamsTable,
+          and(
+            eq(schema.teamMembersTable.teamId, schema.teamsTable.id),
+            notDeleted(schema.teamsTable),
+          ),
+        )
         .where(eq(schema.teamMembersTable.userId, params.userId));
 
       const userTeamIds = new Set(

@@ -9,6 +9,7 @@ import {
   sql,
 } from "drizzle-orm";
 import db, { schema } from "@/database";
+import { notDeleted, softDeleteValues } from "@/database/utils/soft-delete";
 import type {
   Conversation,
   InsertConversation,
@@ -80,6 +81,7 @@ class ConversationModel {
     const conditions = [
       eq(schema.conversationsTable.userId, userId),
       eq(schema.conversationsTable.organizationId, organizationId),
+      notDeleted(schema.conversationsTable),
     ];
 
     // Add search filter if provided
@@ -137,7 +139,10 @@ class ConversationModel {
         .from(schema.conversationsTable)
         .leftJoin(
           schema.agentsTable,
-          eq(schema.conversationsTable.agentId, schema.agentsTable.id),
+          and(
+            eq(schema.conversationsTable.agentId, schema.agentsTable.id),
+            notDeleted(schema.agentsTable),
+          ),
         )
         .leftJoin(
           schema.messagesTable,
@@ -189,6 +194,7 @@ class ConversationModel {
           }
           conversationMap.set(conversationId, {
             ...row.conversation,
+            agentId: row.agent ? row.conversation.agentId : null,
             agent: row.agent,
             share: row.share?.id ? row.share : null,
             messages: [],
@@ -233,7 +239,10 @@ class ConversationModel {
         .from(schema.conversationsTable)
         .leftJoin(
           schema.agentsTable,
-          eq(schema.conversationsTable.agentId, schema.agentsTable.id),
+          and(
+            eq(schema.conversationsTable.agentId, schema.agentsTable.id),
+            notDeleted(schema.agentsTable),
+          ),
         )
         .leftJoin(
           schema.conversationSharesTable,
@@ -247,6 +256,7 @@ class ConversationModel {
 
       return rows.map((row) => ({
         ...row.conversation,
+        agentId: row.agent ? row.conversation.agentId : null,
         agent: row.agent,
         share: row.share?.id ? row.share : null,
         messages: [], // Messages fetched separately via findById
@@ -283,7 +293,10 @@ class ConversationModel {
       .from(schema.conversationsTable)
       .leftJoin(
         schema.agentsTable,
-        eq(schema.conversationsTable.agentId, schema.agentsTable.id),
+        and(
+          eq(schema.conversationsTable.agentId, schema.agentsTable.id),
+          notDeleted(schema.agentsTable),
+        ),
       )
       .leftJoin(
         schema.messagesTable,
@@ -301,6 +314,7 @@ class ConversationModel {
           eq(schema.conversationsTable.id, id),
           eq(schema.conversationsTable.userId, userId),
           eq(schema.conversationsTable.organizationId, organizationId),
+          notDeleted(schema.conversationsTable),
         ),
       )
       .orderBy(schema.messagesTable.createdAt);
@@ -322,6 +336,7 @@ class ConversationModel {
 
     return {
       ...firstRow.conversation,
+      agentId: firstRow.agent ? firstRow.conversation.agentId : null,
       agent: firstRow.agent,
       share: firstRow.share?.id ? firstRow.share : null,
       messages,
@@ -382,7 +397,10 @@ class ConversationModel {
       .from(schema.conversationsTable)
       .leftJoin(
         schema.agentsTable,
-        eq(schema.conversationsTable.agentId, schema.agentsTable.id),
+        and(
+          eq(schema.conversationsTable.agentId, schema.agentsTable.id),
+          notDeleted(schema.agentsTable),
+        ),
       )
       .leftJoin(
         schema.messagesTable,
@@ -399,6 +417,7 @@ class ConversationModel {
         and(
           eq(schema.conversationsTable.id, params.id),
           eq(schema.conversationsTable.organizationId, params.organizationId),
+          notDeleted(schema.conversationsTable),
         ),
       )
       .orderBy(schema.messagesTable.createdAt);
@@ -421,6 +440,7 @@ class ConversationModel {
 
     return {
       ...firstRow.conversation,
+      agentId: firstRow.agent ? firstRow.conversation.agentId : null,
       agent: firstRow.agent,
       share: firstRow.share?.id ? firstRow.share : null,
       messages,
@@ -442,6 +462,7 @@ class ConversationModel {
           eq(schema.conversationsTable.id, id),
           eq(schema.conversationsTable.userId, userId),
           eq(schema.conversationsTable.organizationId, organizationId),
+          notDeleted(schema.conversationsTable),
         ),
       )
       .returning();
@@ -464,15 +485,26 @@ class ConversationModel {
     userId: string,
     organizationId: string,
   ): Promise<void> {
-    await db
-      .delete(schema.conversationsTable)
+    const rows = await db
+      .update(schema.conversationsTable)
+      .set(softDeleteValues())
       .where(
         and(
           eq(schema.conversationsTable.id, id),
           eq(schema.conversationsTable.userId, userId),
           eq(schema.conversationsTable.organizationId, organizationId),
+          notDeleted(schema.conversationsTable),
         ),
-      );
+      )
+      .returning({ id: schema.conversationsTable.id });
+
+    if (rows.length > 0) {
+      await ConversationShareModel.delete({
+        conversationId: id,
+        organizationId,
+        userId,
+      });
+    }
   }
 
   /**
@@ -483,7 +515,12 @@ class ConversationModel {
     const result = await db
       .select({ agentId: schema.conversationsTable.agentId })
       .from(schema.conversationsTable)
-      .where(eq(schema.conversationsTable.id, conversationId))
+      .where(
+        and(
+          eq(schema.conversationsTable.id, conversationId),
+          notDeleted(schema.conversationsTable),
+        ),
+      )
       .limit(1);
 
     return result[0]?.agentId ?? null;
@@ -506,6 +543,7 @@ class ConversationModel {
           eq(schema.conversationsTable.id, conversationId),
           eq(schema.conversationsTable.userId, userId),
           eq(schema.conversationsTable.organizationId, organizationId),
+          notDeleted(schema.conversationsTable),
         ),
       )
       .limit(1);

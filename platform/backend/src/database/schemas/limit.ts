@@ -32,6 +32,7 @@ const limitsTable = pgTable(
       .notNull()
       .defaultNow()
       .$onUpdate(() => new Date()),
+    deletedAt: timestamp("deleted_at", { mode: "date" }),
   },
   (table) => ({
     entityIdx: index("limits_entity_idx").on(table.entityType, table.entityId),
