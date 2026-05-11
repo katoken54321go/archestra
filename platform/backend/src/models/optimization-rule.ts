@@ -1,6 +1,7 @@
 import type { SupportedProvider } from "@shared";
 import { and, asc, eq, getTableColumns, or, sql } from "drizzle-orm";
 import db, { schema } from "@/database";
+import { notDeleted, softDeleteValues } from "@/database/utils/soft-delete";
 import logger from "@/logging";
 import type {
   InsertOptimizationRule,
@@ -51,6 +52,7 @@ class OptimizationRuleModel {
         and(
           eq(schema.optimizationRulesTable.entityType, "team"),
           eq(schema.optimizationRulesTable.entityId, schema.teamsTable.id),
+          notDeleted(schema.teamsTable),
         ),
       )
       .leftJoin(
@@ -58,24 +60,28 @@ class OptimizationRuleModel {
         and(
           eq(schema.optimizationRulesTable.entityType, "agent"),
           sql`${schema.optimizationRulesTable.entityId} = ${schema.agentsTable.id}::text`,
+          notDeleted(schema.agentsTable),
         ),
       )
       .where(
-        or(
-          // Organization-level rules
-          and(
-            eq(schema.optimizationRulesTable.entityType, "organization"),
-            eq(schema.optimizationRulesTable.entityId, organizationId),
-          ),
-          // Team-level rules for teams in this organization
-          and(
-            eq(schema.optimizationRulesTable.entityType, "team"),
-            eq(schema.teamsTable.organizationId, organizationId),
-          ),
-          // Agent-level rules for agents in this organization
-          and(
-            eq(schema.optimizationRulesTable.entityType, "agent"),
-            eq(schema.agentsTable.organizationId, organizationId),
+        and(
+          notDeleted(schema.optimizationRulesTable),
+          or(
+            // Organization-level rules
+            and(
+              eq(schema.optimizationRulesTable.entityType, "organization"),
+              eq(schema.optimizationRulesTable.entityId, organizationId),
+            ),
+            // Team-level rules for teams in this organization
+            and(
+              eq(schema.optimizationRulesTable.entityType, "team"),
+              eq(schema.teamsTable.organizationId, organizationId),
+            ),
+            // Agent-level rules for agents in this organization
+            and(
+              eq(schema.optimizationRulesTable.entityType, "agent"),
+              eq(schema.agentsTable.organizationId, organizationId),
+            ),
           ),
         ),
       )
@@ -108,6 +114,7 @@ class OptimizationRuleModel {
         and(
           eq(schema.optimizationRulesTable.entityType, "team"),
           eq(schema.optimizationRulesTable.entityId, schema.teamsTable.id),
+          notDeleted(schema.teamsTable),
         ),
       )
       .leftJoin(
@@ -115,11 +122,13 @@ class OptimizationRuleModel {
         and(
           eq(schema.optimizationRulesTable.entityType, "agent"),
           sql`${schema.optimizationRulesTable.entityId} = ${schema.agentsTable.id}::text`,
+          notDeleted(schema.agentsTable),
         ),
       )
       .where(
         and(
           eq(schema.optimizationRulesTable.id, id),
+          notDeleted(schema.optimizationRulesTable),
           or(
             and(
               eq(schema.optimizationRulesTable.entityType, "organization"),
@@ -165,6 +174,7 @@ class OptimizationRuleModel {
           and(
             eq(schema.teamsTable.id, entityId),
             eq(schema.teamsTable.organizationId, organizationId),
+            notDeleted(schema.teamsTable),
           ),
         )
         .limit(1);
@@ -179,6 +189,7 @@ class OptimizationRuleModel {
         and(
           eq(schema.agentsTable.id, entityId),
           eq(schema.agentsTable.organizationId, organizationId),
+          notDeleted(schema.agentsTable),
         ),
       )
       .limit(1);
@@ -206,6 +217,7 @@ class OptimizationRuleModel {
           eq(schema.optimizationRulesTable.entityId, organizationId),
           eq(schema.optimizationRulesTable.provider, provider),
           eq(schema.optimizationRulesTable.enabled, true),
+          notDeleted(schema.optimizationRulesTable),
         ),
       )
       .orderBy(asc(schema.optimizationRulesTable.createdAt));
@@ -228,7 +240,12 @@ class OptimizationRuleModel {
     const [result] = await db
       .select({ entityId: schema.optimizationRulesTable.entityId })
       .from(schema.optimizationRulesTable)
-      .where(sql`${schema.optimizationRulesTable.entityType} = 'organization'`)
+      .where(
+        and(
+          sql`${schema.optimizationRulesTable.entityType} = 'organization'`,
+          notDeleted(schema.optimizationRulesTable),
+        ),
+      )
       .limit(1);
 
     const organizationId = result?.entityId || null;
@@ -250,7 +267,12 @@ class OptimizationRuleModel {
     const [rule] = await db
       .update(schema.optimizationRulesTable)
       .set(data)
-      .where(eq(schema.optimizationRulesTable.id, id))
+      .where(
+        and(
+          eq(schema.optimizationRulesTable.id, id),
+          notDeleted(schema.optimizationRulesTable),
+        ),
+      )
       .returning();
 
     logger.debug(
@@ -265,11 +287,18 @@ class OptimizationRuleModel {
    */
   static async delete(id: string): Promise<boolean> {
     logger.debug({ id }, "OptimizationRuleModel.delete: deleting rule");
-    const result = await db
-      .delete(schema.optimizationRulesTable)
-      .where(eq(schema.optimizationRulesTable.id, id));
+    const [rule] = await db
+      .update(schema.optimizationRulesTable)
+      .set(softDeleteValues())
+      .where(
+        and(
+          eq(schema.optimizationRulesTable.id, id),
+          notDeleted(schema.optimizationRulesTable),
+        ),
+      )
+      .returning({ id: schema.optimizationRulesTable.id });
 
-    const deleted = result.rowCount !== null && result.rowCount > 0;
+    const deleted = !!rule;
     logger.debug({ id, deleted }, "OptimizationRuleModel.delete: completed");
     return deleted;
   }

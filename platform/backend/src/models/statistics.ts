@@ -1,6 +1,7 @@
 import type { StatisticsTimeFrame } from "@shared";
 import { and, eq, gte, inArray, lte, sql } from "drizzle-orm";
 import db, { schema } from "@/database";
+import { notDeleted } from "@/database/utils/soft-delete";
 import type {
   AgentStatistics,
   CostSavingsStatistics,
@@ -310,7 +311,10 @@ class StatisticsModel {
       .from(schema.interactionsTable)
       .innerJoin(
         schema.agentsTable,
-        eq(schema.interactionsTable.profileId, schema.agentsTable.id),
+        and(
+          eq(schema.interactionsTable.profileId, schema.agentsTable.id),
+          notDeleted(schema.agentsTable),
+        ),
       )
       .innerJoin(
         schema.agentTeamsTable,
@@ -318,7 +322,10 @@ class StatisticsModel {
       )
       .innerJoin(
         schema.teamsTable,
-        eq(schema.agentTeamsTable.teamId, schema.teamsTable.id),
+        and(
+          eq(schema.agentTeamsTable.teamId, schema.teamsTable.id),
+          notDeleted(schema.teamsTable),
+        ),
       )
       .where(
         and(
@@ -388,19 +395,28 @@ class StatisticsModel {
           schema.membersTable.organizationId,
         ),
       )
+      .where(notDeleted(schema.teamsTable))
       .groupBy(schema.teamsTable.id);
 
     // Get agent counts per team
     const teamAgentCounts = await db
       .select({
         teamId: schema.teamsTable.id,
-        agentCount: sql<number>`CAST(COUNT(DISTINCT ${schema.agentTeamsTable.agentId}) AS INTEGER)`,
+        agentCount: sql<number>`CAST(COUNT(DISTINCT ${schema.agentsTable.id}) AS INTEGER)`,
       })
       .from(schema.teamsTable)
       .leftJoin(
         schema.agentTeamsTable,
         eq(schema.teamsTable.id, schema.agentTeamsTable.teamId),
       )
+      .leftJoin(
+        schema.agentsTable,
+        and(
+          eq(schema.agentTeamsTable.agentId, schema.agentsTable.id),
+          notDeleted(schema.agentsTable),
+        ),
+      )
+      .where(notDeleted(schema.teamsTable))
       .groupBy(schema.teamsTable.id);
 
     // Aggregate data by team
@@ -484,7 +500,10 @@ class StatisticsModel {
       .from(schema.interactionsTable)
       .innerJoin(
         schema.agentsTable,
-        eq(schema.interactionsTable.profileId, schema.agentsTable.id),
+        and(
+          eq(schema.interactionsTable.profileId, schema.agentsTable.id),
+          notDeleted(schema.agentsTable),
+        ),
       )
       .leftJoin(
         schema.agentTeamsTable,
@@ -492,7 +511,10 @@ class StatisticsModel {
       )
       .leftJoin(
         schema.teamsTable,
-        eq(schema.agentTeamsTable.teamId, schema.teamsTable.id),
+        and(
+          eq(schema.agentTeamsTable.teamId, schema.teamsTable.id),
+          notDeleted(schema.teamsTable),
+        ),
       )
       .where(
         and(

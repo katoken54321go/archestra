@@ -1,5 +1,6 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import db, { schema } from "@/database";
+import { notDeleted } from "@/database/utils/soft-delete";
 import logger from "@/logging";
 import type { AgentAccessContext } from "@/types";
 import { findAgentAccessContextById } from "./agent-access-context";
@@ -24,7 +25,8 @@ class AgentTeamModel {
     if (isAgentAdmin) {
       const allAgents = await db
         .select({ id: schema.agentsTable.id })
-        .from(schema.agentsTable);
+        .from(schema.agentsTable)
+        .where(notDeleted(schema.agentsTable));
 
       logger.debug(
         { userId, count: allAgents.length },
@@ -35,15 +37,22 @@ class AgentTeamModel {
 
     // Single query: UNION of org-scoped, author's own, and team-scoped agents
     const result = await db.execute<{ id: string }>(sql`
-      SELECT id FROM agents WHERE scope = 'org'
+      SELECT id FROM agents WHERE scope = 'org' AND deleted_at IS NULL
       UNION
-      SELECT id FROM agents WHERE author_id = ${userId} AND scope = 'personal'
+      SELECT id FROM agents
+        WHERE author_id = ${userId}
+          AND scope = 'personal'
+          AND deleted_at IS NULL
       UNION
       SELECT at.agent_id AS id
         FROM agent_team at
         INNER JOIN agents a ON at.agent_id = a.id
         INNER JOIN team_member tm ON at.team_id = tm.team_id
-        WHERE tm.user_id = ${userId} AND a.scope = 'team'
+        INNER JOIN "team" t ON at.team_id = t.id
+        WHERE tm.user_id = ${userId}
+          AND a.scope = 'team'
+          AND a.deleted_at IS NULL
+          AND t.deleted_at IS NULL
     `);
 
     const accessibleAgentIds = result.rows.map((r) => r.id);
@@ -113,7 +122,16 @@ class AgentTeamModel {
       const userTeams = await db
         .select({ teamId: schema.teamMembersTable.teamId })
         .from(schema.teamMembersTable)
-        .where(eq(schema.teamMembersTable.userId, userId));
+        .innerJoin(
+          schema.teamsTable,
+          eq(schema.teamMembersTable.teamId, schema.teamsTable.id),
+        )
+        .where(
+          and(
+            eq(schema.teamMembersTable.userId, userId),
+            notDeleted(schema.teamsTable),
+          ),
+        );
 
       const teamIds = userTeams.map((t) => t.teamId);
 
@@ -158,7 +176,16 @@ class AgentTeamModel {
     const agentTeams = await db
       .select({ teamId: schema.agentTeamsTable.teamId })
       .from(schema.agentTeamsTable)
-      .where(eq(schema.agentTeamsTable.agentId, agentId));
+      .innerJoin(
+        schema.teamsTable,
+        eq(schema.agentTeamsTable.teamId, schema.teamsTable.id),
+      )
+      .where(
+        and(
+          eq(schema.agentTeamsTable.agentId, agentId),
+          notDeleted(schema.teamsTable),
+        ),
+      );
 
     const teamIds = agentTeams.map((at) => at.teamId);
     logger.debug(
@@ -186,7 +213,10 @@ class AgentTeamModel {
       .from(schema.agentTeamsTable)
       .innerJoin(
         schema.teamsTable,
-        eq(schema.agentTeamsTable.teamId, schema.teamsTable.id),
+        and(
+          eq(schema.agentTeamsTable.teamId, schema.teamsTable.id),
+          notDeleted(schema.teamsTable),
+        ),
       )
       .where(eq(schema.agentTeamsTable.agentId, agentId));
 
@@ -334,10 +364,15 @@ class AgentTeamModel {
       const match = await db
         .select({ teamId: schema.agentTeamsTable.teamId })
         .from(schema.agentTeamsTable)
+        .innerJoin(
+          schema.teamsTable,
+          eq(schema.agentTeamsTable.teamId, schema.teamsTable.id),
+        )
         .where(
           and(
             eq(schema.agentTeamsTable.agentId, agentId),
             eq(schema.agentTeamsTable.teamId, teamId),
+            notDeleted(schema.teamsTable),
           ),
         )
         .limit(1);
@@ -379,7 +414,16 @@ class AgentTeamModel {
         teamId: schema.agentTeamsTable.teamId,
       })
       .from(schema.agentTeamsTable)
-      .where(inArray(schema.agentTeamsTable.agentId, agentIds));
+      .innerJoin(
+        schema.teamsTable,
+        eq(schema.agentTeamsTable.teamId, schema.teamsTable.id),
+      )
+      .where(
+        and(
+          inArray(schema.agentTeamsTable.agentId, agentIds),
+          notDeleted(schema.teamsTable),
+        ),
+      );
 
     const teamsMap = new Map<string, string[]>();
 
@@ -428,7 +472,10 @@ class AgentTeamModel {
       .from(schema.agentTeamsTable)
       .innerJoin(
         schema.teamsTable,
-        eq(schema.agentTeamsTable.teamId, schema.teamsTable.id),
+        and(
+          eq(schema.agentTeamsTable.teamId, schema.teamsTable.id),
+          notDeleted(schema.teamsTable),
+        ),
       )
       .where(inArray(schema.agentTeamsTable.agentId, agentIds));
 

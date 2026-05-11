@@ -10,6 +10,7 @@ import {
   type SQL,
 } from "drizzle-orm";
 import db, { schema } from "@/database";
+import { notDeleted, softDeleteValues } from "@/database/utils/soft-delete";
 import {
   normalizeCronExpression,
   normalizeTimezone,
@@ -76,7 +77,10 @@ class ScheduleTriggerModel {
       )
       .leftJoin(
         schema.agentsTable,
-        eq(schema.scheduleTriggersTable.agentId, schema.agentsTable.id),
+        and(
+          eq(schema.scheduleTriggersTable.agentId, schema.agentsTable.id),
+          notDeleted(schema.agentsTable),
+        ),
       )
       .where(and(...filters))
       .orderBy(desc(schema.scheduleTriggersTable.createdAt))
@@ -107,9 +111,17 @@ class ScheduleTriggerModel {
       )
       .leftJoin(
         schema.agentsTable,
-        eq(schema.scheduleTriggersTable.agentId, schema.agentsTable.id),
+        and(
+          eq(schema.scheduleTriggersTable.agentId, schema.agentsTable.id),
+          notDeleted(schema.agentsTable),
+        ),
       )
-      .where(eq(schema.scheduleTriggersTable.id, id));
+      .where(
+        and(
+          eq(schema.scheduleTriggersTable.id, id),
+          notDeleted(schema.scheduleTriggersTable),
+        ),
+      );
 
     return trigger ?? null;
   }
@@ -143,7 +155,12 @@ class ScheduleTriggerModel {
           timezone: normalizeTimezone(data.timezone),
         }),
       })
-      .where(eq(schema.scheduleTriggersTable.id, id))
+      .where(
+        and(
+          eq(schema.scheduleTriggersTable.id, id),
+          notDeleted(schema.scheduleTriggersTable),
+        ),
+      )
       .returning({ id: schema.scheduleTriggersTable.id });
 
     if (!updated) {
@@ -154,11 +171,18 @@ class ScheduleTriggerModel {
   }
 
   static async delete(id: string): Promise<boolean> {
-    const result = await db
-      .delete(schema.scheduleTriggersTable)
-      .where(eq(schema.scheduleTriggersTable.id, id));
+    const [deleted] = await db
+      .update(schema.scheduleTriggersTable)
+      .set(softDeleteValues())
+      .where(
+        and(
+          eq(schema.scheduleTriggersTable.id, id),
+          notDeleted(schema.scheduleTriggersTable),
+        ),
+      )
+      .returning({ id: schema.scheduleTriggersTable.id });
 
-    return (result.rowCount ?? 0) > 0;
+    return !!deleted;
   }
 
   static async findDueTriggers(now: Date): Promise<ScheduleTrigger[]> {
@@ -175,9 +199,17 @@ class ScheduleTriggerModel {
       )
       .leftJoin(
         schema.agentsTable,
-        eq(schema.scheduleTriggersTable.agentId, schema.agentsTable.id),
+        and(
+          eq(schema.scheduleTriggersTable.agentId, schema.agentsTable.id),
+          notDeleted(schema.agentsTable),
+        ),
       )
-      .where(eq(schema.scheduleTriggersTable.enabled, true));
+      .where(
+        and(
+          eq(schema.scheduleTriggersTable.enabled, true),
+          notDeleted(schema.scheduleTriggersTable),
+        ),
+      );
 
     const dueTriggers: ScheduleTrigger[] = [];
     for (const trigger of enabledTriggers) {
@@ -204,7 +236,12 @@ class ScheduleTriggerModel {
     await db
       .update(schema.scheduleTriggersTable)
       .set({ lastExecutedAt: now })
-      .where(eq(schema.scheduleTriggersTable.id, id));
+      .where(
+        and(
+          eq(schema.scheduleTriggersTable.id, id),
+          notDeleted(schema.scheduleTriggersTable),
+        ),
+      );
   }
 }
 
@@ -235,6 +272,7 @@ function buildListFilters(
 
   const filters: SQL[] = [
     eq(schema.scheduleTriggersTable.organizationId, params.organizationId),
+    notDeleted(schema.scheduleTriggersTable),
   ];
 
   if (params.enabled !== undefined) {
@@ -290,6 +328,7 @@ function triggerColumns() {
     actorUserId: schema.scheduleTriggersTable.actorUserId,
     lastExecutedAt: schema.scheduleTriggersTable.lastExecutedAt,
     createdAt: schema.scheduleTriggersTable.createdAt,
+    deletedAt: schema.scheduleTriggersTable.deletedAt,
   };
 }
 

@@ -351,4 +351,50 @@ describe("AgentConnectorAssignmentModel", () => {
       expect(connectorIds).not.toContain(connector2.id);
     });
   });
+
+  describe("cascade delete", () => {
+    test("assignments are deleted when agent is soft deleted", async ({
+      makeAgent,
+      makeOrganization,
+      makeKnowledgeBase,
+      makeKnowledgeBaseConnector,
+    }) => {
+      const org = await makeOrganization();
+      const agent = await makeAgent({ organizationId: org.id });
+      const kb = await makeKnowledgeBase(org.id);
+      const connector = await makeKnowledgeBaseConnector(kb.id, org.id);
+
+      await AgentConnectorAssignmentModel.assign(agent.id, connector.id);
+
+      const { default: AgentModel } = await import("./agent");
+      await AgentModel.delete(agent.id);
+
+      const results = await AgentConnectorAssignmentModel.findByConnector(
+        connector.id,
+      );
+      expect(results).toHaveLength(0);
+    });
+
+    test("assignments are deleted when connector is soft deleted", async ({
+      makeAgent,
+      makeOrganization,
+      makeKnowledgeBase,
+      makeKnowledgeBaseConnector,
+    }) => {
+      const org = await makeOrganization();
+      const agent = await makeAgent({ organizationId: org.id });
+      const kb = await makeKnowledgeBase(org.id);
+      const connector = await makeKnowledgeBaseConnector(kb.id, org.id);
+
+      await AgentConnectorAssignmentModel.assign(agent.id, connector.id);
+
+      const { default: KnowledgeBaseConnectorModel } = await import(
+        "./knowledge-base-connector"
+      );
+      await KnowledgeBaseConnectorModel.delete(connector.id);
+
+      const results = await AgentConnectorAssignmentModel.findByAgent(agent.id);
+      expect(results).toHaveLength(0);
+    });
+  });
 });

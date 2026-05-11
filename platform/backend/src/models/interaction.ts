@@ -17,6 +17,7 @@ import {
   sum,
 } from "drizzle-orm";
 import db, { schema } from "@/database";
+import { notDeleted } from "@/database/utils/soft-delete";
 import {
   createPaginatedResult,
   type PaginatedResult,
@@ -161,9 +162,30 @@ async function getAgentNamesById(
   const agents = await db
     .select({ id: schema.agentsTable.id, name: schema.agentsTable.name })
     .from(schema.agentsTable)
-    .where(inArray(schema.agentsTable.id, agentIds));
+    .where(
+      and(
+        inArray(schema.agentsTable.id, agentIds),
+        notDeleted(schema.agentsTable),
+      ),
+    );
 
   return new Map(agents.map((a) => [a.id, a.name]));
+}
+
+async function getActiveAgentIds(agentIds: string[]): Promise<Set<string>> {
+  if (agentIds.length === 0) return new Set();
+
+  const agents = await db
+    .select({ id: schema.agentsTable.id })
+    .from(schema.agentsTable)
+    .where(
+      and(
+        inArray(schema.agentsTable.id, agentIds),
+        notDeleted(schema.agentsTable),
+      ),
+    );
+
+  return new Set(agents.map((agent) => agent.id));
 }
 
 /**
@@ -380,6 +402,12 @@ class InteractionModel {
         .where(whereClause),
     ]);
 
+    const activeProfileIds = await getActiveAgentIds(
+      data
+        .map((interaction) => interaction.profileId)
+        .filter((id): id is string => id !== null),
+    );
+
     // Resolve external agent IDs (including delegation chains) to agent names
     const allAgentIds = extractAllAgentIdsFromExternalAgentIds(
       data.map((i) => i.externalAgentId),
@@ -389,6 +417,10 @@ class InteractionModel {
     // Add computed requestType and externalAgentIdLabel fields to each interaction
     const dataWithComputedFields = data.map((interaction) => ({
       ...interaction,
+      profileId:
+        interaction.profileId && activeProfileIds.has(interaction.profileId)
+          ? interaction.profileId
+          : null,
       requestType: computeRequestType(
         interaction.request,
         interaction.sessionSource,
@@ -451,15 +483,23 @@ class InteractionModel {
       return null;
     }
 
+    let result: Interaction = interaction as Interaction;
+    if (interaction.profileId) {
+      const activeProfileIds = await getActiveAgentIds([interaction.profileId]);
+      if (!activeProfileIds.has(interaction.profileId)) {
+        result = { ...result, profileId: null };
+      }
+    }
+
     // Check access control for non-agent admins
     if (userId && !isAgentAdmin) {
       // If profileId is null (agent was deleted), only admins can see the interaction
-      if (!interaction.profileId) {
+      if (!result.profileId) {
         return null;
       }
       const hasAccess = await AgentTeamModel.userHasAgentAccess(
         userId,
-        interaction.profileId,
+        result.profileId,
         false,
       );
       if (!hasAccess) {
@@ -467,7 +507,7 @@ class InteractionModel {
       }
     }
 
-    return interaction as Interaction;
+    return result;
   }
 
   static async getAllInteractionsForProfile(
@@ -708,7 +748,12 @@ class InteractionModel {
         const teams = await db
           .select()
           .from(schema.teamsTable)
-          .where(inArray(schema.teamsTable.id, agentTeamIds));
+          .where(
+            and(
+              inArray(schema.teamsTable.id, agentTeamIds),
+              notDeleted(schema.teamsTable),
+            ),
+          );
 
         // Update organization-level token cost limits (from first team's organization)
         if (teams.length > 0 && teams[0].organizationId) {
@@ -890,7 +935,12 @@ class InteractionModel {
           firstRequestTime: min(schema.interactionsTable.createdAt),
           lastRequestTime: max(schema.interactionsTable.createdAt),
           models: sql<string>`STRING_AGG(DISTINCT ${schema.interactionsTable.model}, ',')`,
-          profileId: schema.interactionsTable.profileId,
+          profileId: sql<string | null>`
+            CASE
+              WHEN ${schema.agentsTable.id} IS NULL THEN NULL
+              ELSE ${schema.interactionsTable.profileId}::text
+            END
+          `,
           profileName: schema.agentsTable.name,
           externalAgentIds: sql<string>`STRING_AGG(DISTINCT ${schema.interactionsTable.externalAgentId}, ',')`,
           authMethods: sql<string>`STRING_AGG(DISTINCT ${schema.interactionsTable.authMethod}, ',')`,
@@ -904,7 +954,10 @@ class InteractionModel {
         .from(schema.interactionsTable)
         .leftJoin(
           schema.agentsTable,
-          eq(schema.interactionsTable.profileId, schema.agentsTable.id),
+          and(
+            eq(schema.interactionsTable.profileId, schema.agentsTable.id),
+            notDeleted(schema.agentsTable),
+          ),
         )
         .leftJoin(
           schema.usersTable,
@@ -921,6 +974,7 @@ class InteractionModel {
         .groupBy(
           sessionGroupExpr,
           schema.interactionsTable.profileId,
+          schema.agentsTable.id,
           schema.agentsTable.name,
         )
         .orderBy(desc(max(schema.interactionsTable.createdAt)))

@@ -43,11 +43,11 @@ export const SelectOptimizationRuleSchema = createSelectSchema(
 export const InsertOptimizationRuleSchema = createInsertSchema(
   schema.optimizationRulesTable,
   extendedFields,
-);
+).omit({ deletedAt: true });
 export const UpdateOptimizationRuleSchema = createUpdateSchema(
   schema.optimizationRulesTable,
   extendedFields,
-);
+).omit({ deletedAt: true });
 
 export type ContentLengthConditions = z.infer<
   typeof ContentLengthConditionsSchema

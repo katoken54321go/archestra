@@ -15,6 +15,7 @@ import {
   sql,
 } from "drizzle-orm";
 import db, { schema } from "@/database";
+import { notDeleted } from "@/database/utils/soft-delete";
 import {
   createPaginatedResult,
   type PaginatedResult,
@@ -132,8 +133,15 @@ class McpToolCallModel {
         .where(whereClause),
     ]);
 
+    const activeAgentIds = await getActiveAgentIds(
+      data.map((toolCall) => toolCall.agentId),
+    );
+
     return createPaginatedResult(
-      data as McpToolCall[],
+      data.map((toolCall) => ({
+        ...toolCall,
+        agentId: activeAgentIds.has(toolCall.agentId) ? toolCall.agentId : null,
+      })) as McpToolCall[],
       Number(total),
       pagination,
     );
@@ -181,15 +189,21 @@ class McpToolCallModel {
       return null;
     }
 
+    let result = mcpToolCall as McpToolCall;
+    const activeAgentIds = await getActiveAgentIds([mcpToolCall.agentId]);
+    if (!activeAgentIds.has(mcpToolCall.agentId)) {
+      result = { ...result, agentId: null };
+    }
+
     // Check access control for non-MCP server admins
     if (userId && !isMcpServerAdmin) {
       // If agentId is null (agent was deleted), only admins can see the tool call
-      if (!mcpToolCall.agentId) {
+      if (!result.agentId) {
         return null;
       }
       const hasAccess = await AgentTeamModel.userHasAgentAccess(
         userId,
-        mcpToolCall.agentId,
+        result.agentId,
         false,
       );
       if (!hasAccess) {
@@ -197,7 +211,7 @@ class McpToolCallModel {
       }
     }
 
-    return mcpToolCall;
+    return result;
   }
 
   static async getAllMcpToolCallsForAgent(
@@ -295,6 +309,22 @@ class McpToolCallModel {
       .from(schema.mcpToolCallsTable);
     return result.total;
   }
+}
+
+async function getActiveAgentIds(agentIds: string[]): Promise<Set<string>> {
+  if (agentIds.length === 0) return new Set();
+
+  const agents = await db
+    .select({ id: schema.agentsTable.id })
+    .from(schema.agentsTable)
+    .where(
+      and(
+        inArray(schema.agentsTable.id, agentIds),
+        notDeleted(schema.agentsTable),
+      ),
+    );
+
+  return new Set(agents.map((agent) => agent.id));
 }
 
 export default McpToolCallModel;
