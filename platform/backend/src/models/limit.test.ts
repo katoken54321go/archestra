@@ -929,6 +929,41 @@ describe("LimitModel", () => {
     });
   });
 
+  describe("per-limit cleanup intervals", () => {
+    test("respects a limit-specific cleanup interval over the org default", async ({
+      makeOrganization,
+    }) => {
+      const org = await makeOrganization();
+
+      const hourlyLimit = await LimitModel.create({
+        entityType: "organization",
+        entityId: org.id,
+        limitType: "token_cost",
+        limitValue: 1000000,
+        model: ["claude-3-5-sonnet-20241022"],
+        cleanupInterval: "1h",
+      });
+      const weeklyLimit = await LimitModel.create({
+        entityType: "organization",
+        entityId: org.id,
+        limitType: "token_cost",
+        limitValue: 1000000,
+        model: ["gpt-4"],
+        cleanupInterval: "1w",
+      });
+
+      const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+      await LimitModel.patch(hourlyLimit.id, { lastCleanup: twoHoursAgo });
+      await LimitModel.patch(weeklyLimit.id, { lastCleanup: twoHoursAgo });
+
+      const limitIds = await LimitModel.findLimitIdsToReset("1h", {
+        entities: { organization: org.id },
+      });
+
+      expect(limitIds).toEqual([hourlyLimit.id]);
+    });
+  });
+
   describe("resetLimitsUsage", () => {
     test("should reset usage counters and set lastCleanup", async ({
       makeAgent,
@@ -1010,6 +1045,41 @@ describe("LimitModel", () => {
       expect(modelUsage2AfterReset[0].currentUsageTokensOut).toBe(0);
       expect(limit2AfterReset?.lastCleanup).toBeDefined();
       expect(limit2AfterReset?.lastCleanup).not.toBeNull();
+    });
+  });
+
+  describe("syncDefaultUserLimits", () => {
+    test("creates default user limits for organization members", async ({
+      makeMember,
+      makeOrganization,
+      makeUser,
+    }) => {
+      const org = await makeOrganization();
+      const user = await makeUser();
+      await makeMember(user.id, org.id);
+
+      await LimitModel.syncDefaultUserLimits(org.id, {
+        defaultUserLimitValue: 25,
+        defaultUserLimitModel: ["gpt-4"],
+        limitCleanupInterval: "12h",
+      });
+
+      const limits = await LimitModel.findLimitsForValidation(
+        "user",
+        user.id,
+        "token_cost",
+      );
+
+      expect(limits).toHaveLength(1);
+      expect(limits[0]).toMatchObject({
+        entityType: "user",
+        organizationId: org.id,
+        entityId: user.id,
+        limitValue: 25,
+        model: ["gpt-4"],
+        cleanupInterval: "12h",
+        isDefaultUserLimit: true,
+      });
     });
   });
 
