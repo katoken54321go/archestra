@@ -222,6 +222,8 @@ const extendedFields = {
   theme: OrganizationThemeSchema,
   customFont: OrganizationCustomFontSchema,
   limitCleanupInterval: OrganizationLimitCleanupIntervalSchema,
+  defaultUserLimitValue: z.number().int().positive().nullable(),
+  defaultUserLimitModel: z.array(z.string()).nullable(),
   compressionScope: OrganizationCompressionScopeSchema,
   globalToolPolicy: GlobalToolPolicySchema,
   embeddingModel: z.string().nullable(),
@@ -280,6 +282,8 @@ export const UpdateLlmSettingsSchema = z.object({
   convertToolResultsToToon: z.boolean().optional(),
   compressionScope: OrganizationCompressionScopeSchema.optional(),
   limitCleanupInterval: OrganizationLimitCleanupIntervalSchema.optional(),
+  defaultUserLimitValue: z.number().int().positive().nullable().optional(),
+  defaultUserLimitModel: z.array(z.string()).min(1).nullable().optional(),
 });
 
 export const UpdateAgentSettingsSchema = z.object({
