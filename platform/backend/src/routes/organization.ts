@@ -17,6 +17,7 @@ import {
   InvitationModel,
   KbDocumentModel,
   KnowledgeBaseConnectorModel,
+  LimitModel,
   LlmProviderApiKeyModel,
   McpToolCallModel,
   MemberModel,
@@ -138,7 +139,7 @@ const organizationRoutes: FastifyPluginAsyncZod = async (fastify) => {
       schema: {
         operationId: RouteId.UpdateLlmSettings,
         description:
-          "Update LLM settings (TOON compression, compression scope, limit cleanup interval)",
+          "Update LLM settings (TOON compression, compression scope, limit cleanup interval, default user limit)",
         tags: ["Organization"],
         body: UpdateLlmSettingsSchema,
         response: constructResponseSchema(SelectOrganizationSchema),
@@ -149,6 +150,18 @@ const organizationRoutes: FastifyPluginAsyncZod = async (fastify) => {
 
       if (!organization) {
         throw new ApiError(404, "Organization not found");
+      }
+
+      if (
+        body.defaultUserLimitValue !== undefined ||
+        body.defaultUserLimitModel !== undefined ||
+        body.limitCleanupInterval !== undefined
+      ) {
+        await LimitModel.syncDefaultUserLimits(organizationId, {
+          defaultUserLimitValue: organization.defaultUserLimitValue,
+          defaultUserLimitModel: organization.defaultUserLimitModel,
+          limitCleanupInterval: organization.limitCleanupInterval,
+        });
       }
 
       return reply.send(organization);
