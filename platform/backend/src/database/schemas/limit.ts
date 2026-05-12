@@ -1,4 +1,5 @@
 import {
+  boolean,
   index,
   integer,
   jsonb,
@@ -8,12 +9,17 @@ import {
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
-import type { LimitEntityType, LimitType } from "@/types";
+import type { LimitCleanupInterval, LimitEntityType, LimitType } from "@/types";
+import organizationsTable from "./organization";
 
 const limitsTable = pgTable(
   "limits",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    organizationId: text("organization_id").references(
+      () => organizationsTable.id,
+      { onDelete: "cascade" },
+    ),
     entityType: varchar("entity_type").$type<LimitEntityType>().notNull(),
     entityId: text("entity_id").notNull(),
     limitType: varchar("limit_type").$type<LimitType>().notNull(),
@@ -26,6 +32,10 @@ const limitsTable = pgTable(
     // 2. Initialization: Create limit_model_usage records for each model on limit creation
     // 3. Validation: Check if incoming interaction's model is within limit scope
     model: jsonb("model").$type<string[] | null>(),
+    cleanupInterval: varchar("cleanup_interval").$type<LimitCleanupInterval>(),
+    isDefaultUserLimit: boolean("is_default_user_limit")
+      .notNull()
+      .default(false),
     lastCleanup: timestamp("last_cleanup", { mode: "date" }),
     createdAt: timestamp("created_at", { mode: "date" }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { mode: "date" })
@@ -34,6 +44,7 @@ const limitsTable = pgTable(
       .$onUpdate(() => new Date()),
   },
   (table) => ({
+    organizationIdx: index("limits_organization_idx").on(table.organizationId),
     entityIdx: index("limits_entity_idx").on(table.entityType, table.entityId),
     limitTypeIdx: index("limits_type_idx").on(table.limitType),
   }),

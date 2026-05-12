@@ -437,6 +437,28 @@ describe("organization routes", () => {
         limitCleanupInterval: "12h",
       });
     });
+
+    test("persists default user limit settings across reads", async () => {
+      await app.inject({
+        method: "PATCH",
+        url: "/api/organization/llm-settings",
+        payload: {
+          defaultUserLimitValue: 25,
+          defaultUserLimitModel: ["gpt-4"],
+        },
+      });
+
+      const response = await app.inject({
+        method: "GET",
+        url: "/api/organization",
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        defaultUserLimitValue: 25,
+        defaultUserLimitModel: ["gpt-4"],
+      });
+    });
   });
 
   describe("PATCH /api/organization/knowledge-settings", () => {

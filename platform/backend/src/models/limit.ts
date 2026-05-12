@@ -1,9 +1,20 @@
-import { and, eq, inArray, isNull, lt, or, type SQL, sql } from "drizzle-orm";
+import {
+  and,
+  eq,
+  inArray,
+  isNull,
+  lt,
+  not,
+  or,
+  type SQL,
+  sql,
+} from "drizzle-orm";
 import db, { schema } from "@/database";
 import logger from "@/logging";
 import type {
   CreateLimit,
   Limit,
+  LimitCleanupInterval,
   LimitEntityType,
   LimitType,
   OrganizationLimitCleanupInterval,
@@ -11,6 +22,8 @@ import type {
 } from "@/types";
 import AgentTeamModel from "./agent-team";
 import ModelModel from "./model";
+
+const DEFAULT_LIMIT_CLEANUP_INTERVAL: LimitCleanupInterval = "1h";
 
 type LimitsCleanupOptionsEntities = {
   [K in Exclude<LimitEntityType, "team">]?: string;
@@ -33,6 +46,12 @@ type LimitsCleanupIntervalSqlLiteral =
   | "1 week"
   | "1 month";
 
+type DefaultUserLimitSettings = {
+  defaultUserLimitValue: number | null;
+  defaultUserLimitModel: string[] | null;
+  limitCleanupInterval?: LimitCleanupInterval | null;
+};
+
 class LimitModel {
   // limitsCleanupIntervalSqlLiterals exists basically to compile-time check set of literals
   static readonly limitsCleanupIntervalSqlLiterals: Record<
@@ -48,10 +67,23 @@ class LimitModel {
   /**
    * Create a new limit
    */
-  static async create(data: CreateLimit): Promise<Limit> {
+  static async create(
+    data: CreateLimit,
+    options?: { organizationId?: string },
+  ): Promise<Limit> {
+    const values = { ...data };
+    if (!values.organizationId && options?.organizationId) {
+      values.organizationId = options.organizationId;
+    }
+    if (!values.cleanupInterval && options?.organizationId) {
+      values.cleanupInterval = await LimitModel.getDefaultCleanupInterval(
+        options.organizationId,
+      );
+    }
+
     const [limit] = await db
       .insert(schema.limitsTable)
-      .values(data)
+      .values(values)
       .returning();
 
     // For token_cost limits, initialize model usage records
@@ -74,9 +106,26 @@ class LimitModel {
     limitId: string,
     models: string[],
   ): Promise<void> {
+    await LimitModel.syncModelUsageRecords(limitId, models);
+  }
+
+  static async syncModelUsageRecords(
+    limitId: string,
+    models: string[],
+  ): Promise<void> {
     if (!models || models.length === 0) {
+      await db
+        .delete(schema.limitModelUsageTable)
+        .where(eq(schema.limitModelUsageTable.limitId, limitId));
       return;
     }
+
+    await db.delete(schema.limitModelUsageTable).where(
+      and(
+        eq(schema.limitModelUsageTable.limitId, limitId),
+        not(inArray(schema.limitModelUsageTable.model, models)),
+      ),
+    );
 
     const records = models.map((model) => ({
       limitId,
@@ -85,10 +134,13 @@ class LimitModel {
       currentUsageTokensOut: 0,
     }));
 
-    await db.insert(schema.limitModelUsageTable).values(records);
+    await db
+      .insert(schema.limitModelUsageTable)
+      .values(records)
+      .onConflictDoNothing();
 
     logger.info(
-      `[LimitModel] Initialized ${models.length} model usage records for limit ${limitId}`,
+      `[LimitModel] Synced ${models.length} model usage records for limit ${limitId}`,
     );
   }
 
@@ -234,6 +286,15 @@ class LimitModel {
       .where(eq(schema.limitsTable.id, id))
       .returning();
 
+    if (
+      limit &&
+      limit.limitType === "token_cost" &&
+      data.model !== undefined &&
+      Array.isArray(limit.model)
+    ) {
+      await LimitModel.syncModelUsageRecords(limit.id, limit.model);
+    }
+
     return limit || null;
   }
 
@@ -291,27 +352,40 @@ class LimitModel {
     model: string,
     inputTokens: number,
     outputTokens: number,
+    organizationId?: string,
   ): Promise<void> {
     logger.debug(
       { entityType, entityId, model, inputTokens, outputTokens },
       "[LimitModel] Update token limit usage",
     );
     try {
+      if (entityType === "user" && !organizationId) {
+        logger.warn(
+          `[LimitModel] Skipping user token limit update for ${entityId}: organizationId is required`,
+        );
+        return;
+      }
+
       // Find all token_cost limits for this entity that include this model
+      const whereConditions: SQL[] = [
+        eq(schema.limitsTable.entityType, entityType),
+        eq(schema.limitsTable.entityId, entityId),
+        eq(schema.limitsTable.limitType, "token_cost"),
+        or(
+          sql`${schema.limitsTable.model} ? ${model}`,
+          sql`${schema.limitsTable.model} IS NULL`,
+        ) as SQL,
+      ];
+      if (entityType === "user" && organizationId) {
+        whereConditions.push(
+          eq(schema.limitsTable.organizationId, organizationId),
+        );
+      }
+
       const limits = await db
         .select({ id: schema.limitsTable.id })
         .from(schema.limitsTable)
-        .where(
-          and(
-            eq(schema.limitsTable.entityType, entityType),
-            eq(schema.limitsTable.entityId, entityId),
-            eq(schema.limitsTable.limitType, "token_cost"),
-            or(
-              sql`${schema.limitsTable.model} ? ${model}`,
-              sql`${schema.limitsTable.model} IS NULL`,
-            ),
-          ),
-        );
+        .where(and(...whereConditions));
 
       if (limits.length === 0) {
         logger.debug(
@@ -362,11 +436,11 @@ class LimitModel {
 
       const organizationId =
         options.entities?.organization ?? options.allForOrganizationId;
-      const limitsResetInterval =
-        await LimitModel.resolveLimitsCleanupIntervalSqlLiteral(organizationId);
+      const defaultCleanupInterval =
+        await LimitModel.resolveLimitsCleanupInterval(organizationId);
 
       const limitIdsToReset = await LimitModel.findLimitIdsToReset(
-        limitsResetInterval,
+        defaultCleanupInterval,
         options,
       );
       await LimitModel.resetLimitsUsage(limitIdsToReset);
@@ -388,11 +462,17 @@ class LimitModel {
     }
   }
 
-  static async resolveLimitsCleanupIntervalSqlLiteral(
+  static async getDefaultCleanupInterval(
+    organizationId: string,
+  ): Promise<LimitCleanupInterval> {
+    return LimitModel.resolveLimitsCleanupInterval(organizationId);
+  }
+
+  static async resolveLimitsCleanupInterval(
     organizationId?: string,
-  ): Promise<LimitsCleanupIntervalSqlLiteral> {
+  ): Promise<LimitCleanupInterval> {
     // Use default cleanup interval if not set
-    let cleanupInterval: LimitsCleanupIntervalSqlLiteral = "1 hour";
+    let cleanupInterval = DEFAULT_LIMIT_CLEANUP_INTERVAL;
 
     if (!organizationId) {
       logger.warn(
@@ -421,10 +501,7 @@ class LimitModel {
       return cleanupInterval;
     }
 
-    cleanupInterval =
-      LimitModel.limitsCleanupIntervalSqlLiterals[
-        organization.limitCleanupInterval
-      ];
+    cleanupInterval = organization.limitCleanupInterval;
     logger.info(
       `[LimitsCleanup] Using cleanup interval: ${cleanupInterval} for organization: ${organizationId}`,
     );
@@ -433,7 +510,7 @@ class LimitModel {
   }
 
   static async findLimitIdsToReset(
-    limitsResetInterval: LimitsCleanupIntervalSqlLiteral,
+    defaultCleanupInterval: LimitCleanupInterval,
     options: LimitsCleanupOptions,
   ): Promise<string[]> {
     const filterConditions: SQL[] = [];
@@ -497,7 +574,15 @@ class LimitModel {
       return [];
     }
 
-    const cutoffIntervalSqlExpr = sql`now() - interval ${sql.raw(`'${limitsResetInterval}'`)}`;
+    const cleanupIntervalSqlExpr = sql`CASE COALESCE(${schema.limitsTable.cleanupInterval}, ${defaultCleanupInterval})
+      WHEN '1h' THEN interval '1 hour'
+      WHEN '12h' THEN interval '12 hours'
+      WHEN '24h' THEN interval '24 hours'
+      WHEN '1w' THEN interval '1 week'
+      WHEN '1m' THEN interval '1 month'
+      ELSE interval '1 hour'
+    END`;
+    const cutoffIntervalSqlExpr = sql`now() - ${cleanupIntervalSqlExpr}`;
 
     const limitsToReset = await db
       .select({ id: schema.limitsTable.id })
@@ -567,19 +652,150 @@ class LimitModel {
     entityType: LimitEntityType,
     entityId: string,
     limitType: LimitType = "token_cost",
+    organizationId?: string,
   ): Promise<Limit[]> {
+    const whereConditions: SQL[] = [
+      eq(schema.limitsTable.entityType, entityType),
+      eq(schema.limitsTable.entityId, entityId),
+      eq(schema.limitsTable.limitType, limitType),
+    ];
+    if (entityType === "user" && organizationId) {
+      whereConditions.push(
+        eq(schema.limitsTable.organizationId, organizationId),
+      );
+    }
+
     const limits = await db
+      .select()
+      .from(schema.limitsTable)
+      .where(and(...whereConditions));
+
+    return limits;
+  }
+
+  static async syncDefaultUserLimits(
+    organizationId: string,
+    settings: DefaultUserLimitSettings,
+  ): Promise<void> {
+    if (
+      !settings.defaultUserLimitValue ||
+      !settings.defaultUserLimitModel ||
+      settings.defaultUserLimitModel.length === 0
+    ) {
+      await db.delete(schema.limitsTable).where(
+        and(
+          eq(schema.limitsTable.entityType, "user"),
+          eq(schema.limitsTable.organizationId, organizationId),
+          eq(schema.limitsTable.isDefaultUserLimit, true),
+        ),
+      );
+      return;
+    }
+
+    const members = await db
+      .select({ userId: schema.membersTable.userId })
+      .from(schema.membersTable)
+      .where(eq(schema.membersTable.organizationId, organizationId));
+    const userIds = members.map((member) => member.userId);
+
+    if (userIds.length === 0) {
+      return;
+    }
+
+    await Promise.all(
+      userIds.map((userId) =>
+        LimitModel.applyDefaultUserLimitToUser(
+          organizationId,
+          userId,
+          settings,
+        ),
+      ),
+    );
+  }
+
+  static async applyDefaultUserLimitToUser(
+    organizationId: string,
+    userId: string,
+    settings?: DefaultUserLimitSettings,
+  ): Promise<void> {
+    const defaultSettings =
+      settings ??
+      (await LimitModel.getDefaultUserLimitSettings(organizationId));
+
+    if (
+      !defaultSettings.defaultUserLimitValue ||
+      !defaultSettings.defaultUserLimitModel ||
+      defaultSettings.defaultUserLimitModel.length === 0
+    ) {
+      return;
+    }
+
+    const limitData = {
+      entityType: "user" as const,
+      organizationId,
+      entityId: userId,
+      limitType: "token_cost" as const,
+      limitValue: defaultSettings.defaultUserLimitValue,
+      model: defaultSettings.defaultUserLimitModel,
+      cleanupInterval:
+        defaultSettings.limitCleanupInterval ?? DEFAULT_LIMIT_CLEANUP_INTERVAL,
+      isDefaultUserLimit: true,
+    };
+
+    const existingDefaultLimits = await db
       .select()
       .from(schema.limitsTable)
       .where(
         and(
-          eq(schema.limitsTable.entityType, entityType),
-          eq(schema.limitsTable.entityId, entityId),
-          eq(schema.limitsTable.limitType, limitType),
+          eq(schema.limitsTable.entityType, "user"),
+          eq(schema.limitsTable.organizationId, organizationId),
+          eq(schema.limitsTable.entityId, userId),
+          eq(schema.limitsTable.limitType, "token_cost"),
+          eq(schema.limitsTable.isDefaultUserLimit, true),
         ),
       );
 
-    return limits;
+    if (existingDefaultLimits.length === 0) {
+      await LimitModel.create(limitData);
+      return;
+    }
+
+    const [primaryLimit, ...duplicateLimits] = existingDefaultLimits;
+    await LimitModel.patch(primaryLimit.id, limitData);
+
+    if (duplicateLimits.length > 0) {
+      await db
+        .delete(schema.limitsTable)
+        .where(
+          inArray(
+            schema.limitsTable.id,
+            duplicateLimits.map((limit) => limit.id),
+          ),
+        );
+    }
+  }
+
+  private static async getDefaultUserLimitSettings(
+    organizationId: string,
+  ): Promise<DefaultUserLimitSettings> {
+    const [organization] = await db
+      .select({
+        defaultUserLimitValue:
+          schema.organizationsTable.defaultUserLimitValue,
+        defaultUserLimitModel:
+          schema.organizationsTable.defaultUserLimitModel,
+        limitCleanupInterval: schema.organizationsTable.limitCleanupInterval,
+      })
+      .from(schema.organizationsTable)
+      .where(eq(schema.organizationsTable.id, organizationId))
+      .limit(1);
+
+    return {
+      defaultUserLimitValue: organization?.defaultUserLimitValue ?? null,
+      defaultUserLimitModel: organization?.defaultUserLimitModel ?? null,
+      limitCleanupInterval:
+        organization?.limitCleanupInterval ?? DEFAULT_LIMIT_CLEANUP_INTERVAL,
+    };
   }
 }
 
@@ -670,12 +886,16 @@ export class LimitValidationService {
         );
       }
 
-      if (userId) {
+      if (userId && organizationId) {
         logger.info(
           `[LimitValidation] Checking user-level limits for: ${userId}`,
         );
         const userLimitViolation =
-          await LimitValidationService.checkEntityLimits("user", userId);
+          await LimitValidationService.checkEntityLimits(
+            "user",
+            userId,
+            organizationId,
+          );
         if (userLimitViolation) {
           logger.info(
             `[LimitValidation] BLOCKED by user-level limit for: ${userId}`,
@@ -685,6 +905,7 @@ export class LimitValidationService {
         logger.info(`[LimitValidation] User-level limits OK for: ${userId}`);
       }
 
+      // Check agent-level limits first (highest priority)
       logger.info(
         `[LimitValidation] Checking agent-level limits for: ${agentId}`,
       );
@@ -769,6 +990,7 @@ export class LimitValidationService {
   private static async checkEntityLimits(
     entityType: LimitEntityType,
     entityId: string,
+    organizationId?: string,
   ): Promise<null | [string, string]> {
     try {
       logger.info(
@@ -778,6 +1000,7 @@ export class LimitValidationService {
         entityType,
         entityId,
         "token_cost",
+        organizationId,
       );
 
       logger.info(

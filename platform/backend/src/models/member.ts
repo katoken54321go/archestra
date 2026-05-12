@@ -3,6 +3,7 @@ import { and, count, eq, ilike, inArray, or } from "drizzle-orm";
 import db, { schema, type Transaction } from "@/database";
 import { createPaginatedResult } from "@/database/utils/pagination";
 import logger from "@/logging";
+import LimitModel from "./limit";
 
 class MemberModel {
   /**
@@ -31,6 +32,14 @@ class MemberModel {
       { userId, organizationId, memberId: result[0]?.id },
       "MemberModel.create: completed",
     );
+    try {
+      await LimitModel.applyDefaultUserLimitToUser(organizationId, userId);
+    } catch (error) {
+      logger.error(
+        { error, userId, organizationId },
+        "MemberModel.create: failed to apply default user limit",
+      );
+    }
     return result;
   }
 

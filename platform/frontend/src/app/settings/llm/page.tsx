@@ -2,9 +2,11 @@
 
 import { archestraApiSdk, type archestraApiTypes } from "@shared";
 import { useQueryClient } from "@tanstack/react-query";
+import { X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { ExternalDocsLink } from "@/components/external-docs-link";
+import { LlmModelSearchableSelect } from "@/components/llm-model-select";
 import { WithPermissions } from "@/components/roles/with-permissions";
 import {
   SettingsBlock,
@@ -12,6 +14,9 @@ import {
   SettingsSectionStack,
 } from "@/components/settings/settings-block";
 import { CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { MultiSelect } from "@/components/ui/multi-select";
 import {
   Select,
@@ -21,6 +26,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { getFrontendDocsUrl } from "@/lib/docs/docs";
+import { useModelsWithApiKeys } from "@/lib/llm-models.query";
 import {
   useOrganization,
   useUpdateLlmSettings,
@@ -58,17 +64,37 @@ export default function LlmSettingsPage() {
   const { data: organization, isPending: isOrganizationPending } =
     useOrganization();
   const { data: teams, isPending: areTeamsPending } = useTeams();
+  const { data: modelsWithApiKeys = [] } = useModelsWithApiKeys();
   const queryClient = useQueryClient();
+  const organizationWithDefaultUserLimit = organization as
+    | (NonNullable<typeof organization> & {
+        defaultUserLimitValue?: number | null;
+        defaultUserLimitModel?: string[] | null;
+      })
+    | undefined;
 
   const [compressionMode, setCompressionMode] =
     useState<CompressionMode>("disabled");
   const [selectedTeamIds, setSelectedTeamIds] = useState<string[]>([]);
   const [cleanupInterval, setCleanupInterval] =
     useState<LimitCleanupInterval>("1h");
+  const [defaultUserLimitValue, setDefaultUserLimitValue] = useState("");
+  const [defaultUserLimitModels, setDefaultUserLimitModels] = useState<
+    string[]
+  >([]);
+  const [defaultUserModelToAdd, setDefaultUserModelToAdd] = useState("");
   const toonDocsUrl = getFrontendDocsUrl(
     "platform-costs-and-limits",
     "toon-compression",
   );
+
+  const modelOptions = modelsWithApiKeys.map((model) => ({
+    value: model.modelId,
+    model: model.modelId,
+    provider: model.provider,
+    pricePerMillionInput: model.pricePerMillionInput ?? "0",
+    pricePerMillionOutput: model.pricePerMillionOutput ?? "0",
+  }));
 
   const updateLlmSettingsMutation = useUpdateLlmSettings(
     "LLM settings updated",
@@ -88,6 +114,16 @@ export default function LlmSettingsPage() {
     }
     setCleanupInterval(
       (organization.limitCleanupInterval as LimitCleanupInterval) || "1h",
+    );
+    const defaultLimitOrganization = organization as typeof organization & {
+      defaultUserLimitValue?: number | null;
+      defaultUserLimitModel?: string[] | null;
+    };
+    setDefaultUserLimitValue(
+      defaultLimitOrganization.defaultUserLimitValue?.toString() ?? "",
+    );
+    setDefaultUserLimitModels(
+      defaultLimitOrganization.defaultUserLimitModel ?? [],
     );
     const enabledTeams = teams
       .filter((team) => team.convertToolResultsToToon)
@@ -109,6 +145,10 @@ export default function LlmSettingsPage() {
 
   const serverCleanupInterval =
     (organization?.limitCleanupInterval as LimitCleanupInterval) || "1h";
+  const serverDefaultUserLimitValue =
+    organizationWithDefaultUserLimit?.defaultUserLimitValue?.toString() ?? "";
+  const serverDefaultUserLimitModels =
+    organizationWithDefaultUserLimit?.defaultUserLimitModel ?? [];
 
   const serverTeamIds = loadedTeams
     .filter((team) => team.convertToolResultsToToon)
@@ -122,10 +162,17 @@ export default function LlmSettingsPage() {
         JSON.stringify(serverTeamIds));
 
   const hasCleanupChanges = cleanupInterval !== serverCleanupInterval;
+  const hasDefaultUserLimitChanges =
+    defaultUserLimitValue !== serverDefaultUserLimitValue ||
+    JSON.stringify([...defaultUserLimitModels].sort()) !==
+      JSON.stringify([...serverDefaultUserLimitModels].sort());
 
   const isInitialLoading = isOrganizationPending || areTeamsPending;
   const hasChanges =
-    !isInitialLoading && (hasCompressionChanges || hasCleanupChanges);
+    !isInitialLoading &&
+    (hasCompressionChanges ||
+      hasCleanupChanges ||
+      hasDefaultUserLimitChanges);
 
   const handleSave = async () => {
     const mutations: Promise<unknown>[] = [];
@@ -174,13 +221,29 @@ export default function LlmSettingsPage() {
       }
     }
 
-    // Collect cleanup interval mutation
+    const limitSettingsUpdate: Partial<
+      archestraApiTypes.UpdateLlmSettingsData["body"]
+    > = {};
     if (hasCleanupChanges) {
-      mutations.push(
-        updateLlmSettingsMutation.mutateAsync({
-          limitCleanupInterval: cleanupInterval,
-        }),
-      );
+      limitSettingsUpdate.limitCleanupInterval = cleanupInterval;
+    }
+
+    if (hasDefaultUserLimitChanges) {
+      const normalizedValue = defaultUserLimitValue
+        ? Number(defaultUserLimitValue)
+        : null;
+      if (normalizedValue && defaultUserLimitModels.length === 0) {
+        toast.error("Select at least one model for the default user limit.");
+        return;
+      }
+      limitSettingsUpdate.defaultUserLimitValue = normalizedValue;
+      limitSettingsUpdate.defaultUserLimitModel = normalizedValue
+        ? defaultUserLimitModels
+        : null;
+    }
+
+    if (Object.keys(limitSettingsUpdate).length > 0) {
+      mutations.push(updateLlmSettingsMutation.mutateAsync(limitSettingsUpdate));
     }
 
     const results = await Promise.allSettled(mutations);
@@ -195,6 +258,9 @@ export default function LlmSettingsPage() {
   const handleCancel = () => {
     setCompressionMode(serverCompressionMode);
     setCleanupInterval(serverCleanupInterval);
+    setDefaultUserLimitValue(serverDefaultUserLimitValue);
+    setDefaultUserLimitModels(serverDefaultUserLimitModels);
+    setDefaultUserModelToAdd("");
     setSelectedTeamIds(
       loadedTeams
         .filter((team) => team.convertToolResultsToToon)
@@ -236,7 +302,9 @@ export default function LlmSettingsPage() {
                 onValueChange={(value: CompressionMode) =>
                   setCompressionMode(value)
                 }
-                disabled={updateLlmSettingsMutation.isPending || !hasPermission}
+                disabled={
+                  updateLlmSettingsMutation.isPending || !hasPermission
+                }
               >
                 <SelectTrigger className="w-48">
                   <SelectValue />
@@ -280,8 +348,8 @@ export default function LlmSettingsPage() {
         )}
       </SettingsBlock>
       <SettingsBlock
-        title="Limit auto-cleanup interval"
-        description="How often expired or exceeded usage limits are automatically reset."
+        title="Default limit cleanup interval"
+        description="Pre-selected when admins create new limits; each limit can override it."
         control={
           <WithPermissions
             permissions={{ llmSettings: ["update"] }}
@@ -293,7 +361,9 @@ export default function LlmSettingsPage() {
                 onValueChange={(value: LimitCleanupInterval) =>
                   setCleanupInterval(value)
                 }
-                disabled={updateLlmSettingsMutation.isPending || !hasPermission}
+                disabled={
+                  updateLlmSettingsMutation.isPending || !hasPermission
+                }
               >
                 <SelectTrigger className="w-48">
                   <SelectValue />
@@ -312,6 +382,80 @@ export default function LlmSettingsPage() {
           </WithPermissions>
         }
       />
+      <SettingsBlock
+        title="Default user limit ($)"
+        description="Creates or updates per-user token-cost limits for all current and future members."
+        control={
+          <WithPermissions
+            permissions={{ llmSettings: ["update"] }}
+            noPermissionHandle="tooltip"
+          >
+            {({ hasPermission }) => (
+              <Input
+                value={defaultUserLimitValue}
+                onChange={(event) =>
+                  setDefaultUserLimitValue(
+                    event.target.value.replace(/[^0-9]/g, ""),
+                  )
+                }
+                placeholder="No limit"
+                inputMode="numeric"
+                className="w-48"
+                disabled={
+                  updateLlmSettingsMutation.isPending || !hasPermission
+                }
+              />
+            )}
+          </WithPermissions>
+        }
+      >
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1">
+            <CardTitle className="text-lg">Models</CardTitle>
+            <p className="text-sm text-muted-foreground">
+              Leave the value empty to disable the default user limit.
+            </p>
+          </div>
+          <div className="w-48 space-y-2">
+            <LlmModelSearchableSelect
+              value={defaultUserModelToAdd}
+              onValueChange={(value) => {
+                setDefaultUserModelToAdd("");
+                setDefaultUserLimitModels((current) =>
+                  current.includes(value) ? current : [...current, value],
+                );
+              }}
+              options={modelOptions}
+              placeholder="Select model..."
+              showPricing={false}
+              className="w-full"
+              disabled={updateLlmSettingsMutation.isPending}
+            />
+            <div className="flex flex-wrap gap-1">
+              {defaultUserLimitModels.map((model) => (
+                <Badge key={model} variant="secondary" className="gap-1 pr-1">
+                  {model}
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-4 w-4"
+                    onClick={() =>
+                      setDefaultUserLimitModels((current) =>
+                        current.filter(
+                          (currentModel) => currentModel !== model,
+                        ),
+                      )
+                    }
+                  >
+                    <X className="h-3 w-3" />
+                  </Button>
+                </Badge>
+              ))}
+            </div>
+          </div>
+        </div>
+      </SettingsBlock>
       <SettingsSaveBar
         hasChanges={hasChanges}
         isSaving={updateLlmSettingsMutation.isPending}

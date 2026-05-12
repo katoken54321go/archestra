@@ -671,6 +671,7 @@ class InteractionModel {
       );
 
       const updatePromises: Promise<void>[] = [];
+      let organizationIdForUsage: string | null = null;
 
       if (agentTeamIds.length === 0) {
         logger.warn(
@@ -687,6 +688,7 @@ class InteractionModel {
             .limit(1);
 
           if (existingOrgLimits.length > 0) {
+            organizationIdForUsage = existingOrgLimits[0].entityId;
             updatePromises.push(
               LimitModel.updateTokenLimitUsage(
                 "organization",
@@ -712,6 +714,7 @@ class InteractionModel {
 
         // Update organization-level token cost limits (from first team's organization)
         if (teams.length > 0 && teams[0].organizationId) {
+          organizationIdForUsage = teams[0].organizationId;
           updatePromises.push(
             LimitModel.updateTokenLimitUsage(
               "organization",
@@ -748,7 +751,7 @@ class InteractionModel {
         ),
       );
 
-      if (interaction.userId) {
+      if (interaction.userId && organizationIdForUsage) {
         updatePromises.push(
           LimitModel.updateTokenLimitUsage(
             "user",
@@ -756,6 +759,7 @@ class InteractionModel {
             model,
             inputTokens,
             outputTokens,
+            organizationIdForUsage,
           ),
         );
       }

@@ -86,6 +86,7 @@ type LimitFormState = {
   limitValue: string;
   models: string[];
   isAllModels: boolean;
+  cleanupInterval: LimitCleanupInterval;
 };
 
 const DEFAULT_FORM_STATE: LimitFormState = {
@@ -94,6 +95,7 @@ const DEFAULT_FORM_STATE: LimitFormState = {
   limitValue: "",
   models: [],
   isAllModels: true,
+  cleanupInterval: "1h",
 };
 
 const CLEANUP_INTERVAL_LABELS: Record<LimitCleanupInterval, string> = {
@@ -193,9 +195,15 @@ export default function LimitsPage() {
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [formState, setFormState] =
     useState<LimitFormState>(DEFAULT_FORM_STATE);
+  const defaultCleanupInterval =
+    (organization?.limitCleanupInterval as LimitCleanupInterval) ?? "1h";
 
   const llmLimits = useMemo(
-    () => limits.filter((limit) => limit.limitType === "token_cost"),
+    () =>
+      limits.filter(
+        (limit) =>
+          limit.limitType === "token_cost" && !limit.isDefaultUserLimit,
+      ),
     [limits],
   );
 
@@ -213,9 +221,12 @@ export default function LimitsPage() {
 
   const handleCreateOpen = useCallback(() => {
     setEditingLimit(null);
-    setFormState(DEFAULT_FORM_STATE);
+    setFormState({
+      ...DEFAULT_FORM_STATE,
+      cleanupInterval: defaultCleanupInterval,
+    });
     setIsDialogOpen(true);
-  }, []);
+  }, [defaultCleanupInterval]);
 
   useEffect(() => {
     setActionButton(
@@ -254,10 +265,13 @@ export default function LimitsPage() {
         limitValue: String(limit.limitValue),
         models: isAllModels ? [] : models,
         isAllModels,
+        cleanupInterval:
+          (limit.cleanupInterval as LimitCleanupInterval | null) ??
+          defaultCleanupInterval,
       });
       setIsDialogOpen(true);
     },
-    [llmProxies],
+    [defaultCleanupInterval, llmProxies],
   );
 
   const getEntityLabel = useCallback(
@@ -488,6 +502,17 @@ export default function LimitsPage() {
         },
       },
       {
+        accessorKey: "cleanupInterval",
+        header: "Cleanup",
+        size: 140,
+        minSize: 120,
+        cell: ({ row }) =>
+          CLEANUP_INTERVAL_LABELS[
+            (row.original.cleanupInterval as LimitCleanupInterval | null) ??
+              defaultCleanupInterval
+          ],
+      },
+      {
         accessorKey: "usage",
         header: "Usage",
         size: 200,
@@ -537,17 +562,20 @@ export default function LimitsPage() {
         ),
       },
     ],
-    [getEntityIcon, getEntityLabel, getUsageStatus, handleEditOpen],
+    [
+      defaultCleanupInterval,
+      getEntityIcon,
+      getEntityLabel,
+      getUsageStatus,
+      handleEditOpen,
+    ],
   );
 
   const hasActiveFilters =
     statusFilter !== "all" ||
     appliedToFilter !== "all" ||
     modelFilter !== "all";
-  const cleanupIntervalLabel =
-    CLEANUP_INTERVAL_LABELS[
-      (organization?.limitCleanupInterval as LimitCleanupInterval) ?? "1h"
-    ];
+  const cleanupIntervalLabel = CLEANUP_INTERVAL_LABELS[defaultCleanupInterval];
 
   async function handleSubmit() {
     const entityType =
@@ -561,6 +589,7 @@ export default function LimitsPage() {
       limitType: "token_cost" as const,
       limitValue: Number(formState.limitValue),
       model: formState.isAllModels ? null : formState.models,
+      cleanupInterval: formState.cleanupInterval,
     };
 
     if (editingLimit) {
@@ -598,7 +627,7 @@ export default function LimitsPage() {
         <CircleHelp />
         <AlertDescription className="sm:flex sm:flex-wrap sm:items-center sm:gap-1">
           <span>
-            Expired or exceeded limits reset on the current cleanup schedule:
+            New limits use the default cleanup interval from LLM settings:
           </span>
           <span className="font-medium text-foreground">
             {cleanupIntervalLabel}
@@ -607,7 +636,7 @@ export default function LimitsPage() {
             href="/settings/llm"
             className="font-medium underline underline-offset-4"
           >
-            Change it in LLM settings
+            Change default
           </Link>
         </AlertDescription>
       </Alert>
@@ -839,6 +868,32 @@ export default function LimitsPage() {
                 editable
                 includeAllOption
               />
+            </div>
+
+            <div className="space-y-2">
+              <Label>Cleanup interval</Label>
+              <Select
+                value={formState.cleanupInterval}
+                onValueChange={(value: LimitCleanupInterval) =>
+                  setFormState((current) => ({
+                    ...current,
+                    cleanupInterval: value,
+                  }))
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {Object.entries(CLEANUP_INTERVAL_LABELS).map(
+                    ([value, label]) => (
+                      <SelectItem key={value} value={value}>
+                        {label}
+                      </SelectItem>
+                    ),
+                  )}
+                </SelectContent>
+              </Select>
             </div>
 
             <div className="space-y-2">

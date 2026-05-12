@@ -10,7 +10,12 @@ import {
 import { z } from "zod";
 import logger from "@/logging";
 import { LimitModel } from "@/models";
-import { LimitEntityTypeSchema, LimitTypeSchema, UuidIdSchema } from "@/types";
+import {
+  LimitCleanupIntervalSchema,
+  LimitEntityTypeSchema,
+  LimitTypeSchema,
+  UuidIdSchema,
+} from "@/types";
 import {
   catchError,
   defineArchestraTool,
@@ -24,6 +29,11 @@ import type { ArchestraContext } from "./types";
 
 const LimitOutputItemSchema = z.object({
   id: z.string().describe("The limit ID."),
+  organizationId: z
+    .string()
+    .nullable()
+    .optional()
+    .describe("The organization that owns the limit, if scoped."),
   entityType: LimitEntityTypeSchema.describe("The limited entity type."),
   entityId: z.string().describe("The limited entity ID."),
   limitType: LimitTypeSchema.describe("The kind of limit."),
@@ -35,6 +45,9 @@ const LimitOutputItemSchema = z.object({
     .describe(
       "Models targeted by a token_cost limit. Null or empty array means all models.",
     ),
+  cleanupInterval: LimitCleanupIntervalSchema.nullable()
+    .optional()
+    .describe("Cleanup interval for this limit, if configured."),
   mcpServerName: z
     .string()
     .nullable()
@@ -64,6 +77,9 @@ const CreateLimitToolArgsSchema = z
       .nullable()
       .optional()
       .describe("Array of model names. Omit for all models."),
+    cleanup_interval: LimitCleanupIntervalSchema.optional().describe(
+      "Optional cleanup interval for this limit.",
+    ),
     mcp_server_name: z
       .string()
       .optional()
@@ -117,18 +133,22 @@ const registry = defineArchestraTools([
       );
 
       try {
-        const limit = await LimitModel.create({
-          entityType: args.entity_type,
-          entityId: args.entity_id,
-          limitType: args.limit_type,
-          limitValue: args.limit_value,
-          model:
-            args.model && Array.isArray(args.model) && args.model.length > 0
-              ? args.model
-              : null,
-          mcpServerName: args.mcp_server_name,
-          toolName: args.tool_name,
-        });
+        const limit = await LimitModel.create(
+          {
+            entityType: args.entity_type,
+            entityId: args.entity_id,
+            limitType: args.limit_type,
+            limitValue: args.limit_value,
+            model:
+              args.model && Array.isArray(args.model) && args.model.length > 0
+                ? args.model
+                : null,
+            cleanupInterval: args.cleanup_interval,
+            mcpServerName: args.mcp_server_name,
+            toolName: args.tool_name,
+          },
+          { organizationId: context.organizationId },
+        );
 
         return structuredSuccessResult(
           { limit },
@@ -140,7 +160,11 @@ const registry = defineArchestraTools([
             limit.limitValue
           }${limit.model ? `\nModel: ${limit.model}` : "\nModel: All models"}${
             limit.mcpServerName ? `\nMCP Server: ${limit.mcpServerName}` : ""
-          }${limit.toolName ? `\nTool: ${limit.toolName}` : ""}`,
+          }${limit.toolName ? `\nTool: ${limit.toolName}` : ""}${
+            limit.cleanupInterval
+              ? `\nCleanup Interval: ${limit.cleanupInterval}`
+              : ""
+          }`,
         );
       } catch (error) {
         return catchError(error, "creating limit");
@@ -177,6 +201,8 @@ const registry = defineArchestraTools([
         const limits = await LimitModel.findAll(
           args.entity_type,
           args.entity_id,
+          undefined,
+          context.organizationId,
         );
 
         if (limits.length === 0) {
@@ -205,6 +231,8 @@ const registry = defineArchestraTools([
             if (limit.mcpServerName)
               result += `\n  MCP Server: ${limit.mcpServerName}`;
             if (limit.toolName) result += `\n  Tool: ${limit.toolName}`;
+            if (limit.cleanupInterval)
+              result += `\n  Cleanup Interval: ${limit.cleanupInterval}`;
             if (limit.lastCleanup)
               result += `\n  Last Cleanup: ${limit.lastCleanup}`;
             return result;
@@ -232,6 +260,9 @@ const registry = defineArchestraTools([
           .number()
           .optional()
           .describe("Optional new limit value."),
+        cleanup_interval: LimitCleanupIntervalSchema.optional().describe(
+          "Optional new cleanup interval.",
+        ),
       })
       .strict(),
     outputSchema: z.object({
@@ -250,6 +281,9 @@ const registry = defineArchestraTools([
         if (args.limit_value !== undefined) {
           updateData.limitValue = args.limit_value;
         }
+        if (args.cleanup_interval !== undefined) {
+          updateData.cleanupInterval = args.cleanup_interval;
+        }
 
         if (Object.keys(updateData).length === 0) {
           return errorResult("No fields provided to update.");
@@ -263,7 +297,7 @@ const registry = defineArchestraTools([
 
         return structuredSuccessResult(
           { limit },
-          `Successfully updated limit.\n\nLimit ID: ${limit.id}\nEntity Type: ${limit.entityType}\nEntity ID: ${limit.entityId}\nLimit Type: ${limit.limitType}\nLimit Value: ${limit.limitValue}`,
+          `Successfully updated limit.\n\nLimit ID: ${limit.id}\nEntity Type: ${limit.entityType}\nEntity ID: ${limit.entityId}\nLimit Type: ${limit.limitType}\nLimit Value: ${limit.limitValue}${limit.cleanupInterval ? `\nCleanup Interval: ${limit.cleanupInterval}` : ""}`,
         );
       } catch (error) {
         return catchError(error, "updating limit");
