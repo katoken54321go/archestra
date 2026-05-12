@@ -31,6 +31,14 @@ vi.mock("@/lib/teams/team.query", () => ({
   }),
 }));
 
+vi.mock("@/lib/llm-models.query", () => ({
+  useModelsWithApiKeys: () => ({ data: [] }),
+}));
+
+vi.mock("@/components/llm-model-select", () => ({
+  LlmModelSearchableSelect: () => <div>Model select</div>,
+}));
+
 vi.mock("@/lib/auth/auth.query", () => ({
   useHasPermissions: () => ({ data: true, isPending: false }),
   useMissingPermissions: () => [],
@@ -56,6 +64,8 @@ beforeEach(() => {
     compressionScope: "organization",
     convertToolResultsToToon: true,
     limitCleanupInterval: "1h",
+    defaultUserLimitValue: null,
+    defaultUserLimitModel: null,
   };
   mockTeams = [];
 });
